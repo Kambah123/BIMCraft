@@ -583,6 +583,7 @@ dependencies = [
  "serde_json",
  "sys-locale",
  "tempfile",
+ "tiny-skia",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
