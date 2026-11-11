@@ -15,8 +15,9 @@ trunk serve --release
 ```
 
 `trunk build --release` writes `dist/`. Serve that folder with any static file server. The page
-needs a browser with [WebGPU](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API)
-(eframe's default renderer is wgpu). There is no WebGL fallback in this build.
+prefers [WebGPU](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API) (eframe's wgpu
+renderer). If the browser has no WebGPU adapter, wgpu falls back to WebGL2 (`webgl` is on for
+the wasm build only; the desktop app stays on wgpu and does not change).
 
 The wasm check of the core and the CLI, which this front end depends on, is `ci/wasm-check.sh`.
 
@@ -25,22 +26,13 @@ The wasm check of the core and the CLI, which this front end depends on, is `ci/
 The window is the same egui shell as the desktop (`BimApp`). It starts on the sample house (the
 one `bimcraft --sample` builds); there is no command line in the browser. Orbiting, panning and
 zooming the 3D view, drawing in plan, and running commands from the ribbon all go through the
-same session as on the desktop, in memory, once WebGPU is up.
+same session as on the desktop, in memory.
 
-The graphics card is used for the 3D view when WebGPU is available, as on the desktop.
-
-On this machine, a headless Chrome load of `dist/` (Playwright, system Google Chrome) showed:
-
-- The page and the Wasm module load (`index.html` 200, the `.wasm` and `.js` 200). The canvas is
-  resized to the viewport, and the console logs `bimcraft: eframe started`.
-- With WebGPU enabled via SwiftShader (`--enable-unsafe-webgpu` and ANGLE/SwiftShader), there was
-  no panic and no page error. Headless screenshots and canvas readback stayed blank (a solid
-  clear, or transparent), so this environment could not confirm that the UI actually painted.
-  That is a known limitation of headless WebGPU, not proof that a real GPU browser would be blank.
-- Without a WebGPU adapter, eframe still starts, then panics in wgpu while creating the `canvas`
-  render pipeline: the shader's group-0 binding-0 is 24 bytes, and the downlevel device requires
-  16-byte alignment. The only other console noise in both cases was a missing `/favicon.ico`
-  (404). Do not expect the window to run in a browser that has no WebGPU.
+The 3D view is drawn on the graphics card when WebGPU is available, as on the desktop. On
+WebGL2, that path is not used: the shaders need storage buffers and a depth texture, which the
+OpenGL backend cannot give them (`Gpu::new` already refuses `Backend::Gl` and the picture is
+drawn on the processor instead). The 2D canvas's retained triangles can still be drawn through
+wgpu on WebGL once their uniform is a multiple of 16 bytes.
 
 `std::time::SystemTime::now` / `Instant::now` and `std::process::id` panic on
 `wasm32-unknown-unknown` ("time not implemented", "no pids on this platform"). Fresh ids and the
@@ -65,10 +57,10 @@ These are current limitations, not accidental omissions:
   listener.
 - **Background work.** Section and 3D workers, Revit import on a thread, and rayon's render pool
   type-check, but `std::thread` does not do useful work in this wasm target.
-- **Size.** A release `trunk build` of this tree is 36,099,580 bytes (36.1 MB) of Wasm without
-  wasm-opt, and 26,218,959 bytes (26.2 MB) after `wasm-opt -z` (about 50 seconds here). That is
-  still large for a web page.
+- **Size.** A release `trunk build` of this tree is 36,097,676 bytes (36.1 MB) of Wasm without
+  wasm-opt, and 26,217,934 bytes (26.2 MB) after `wasm-opt -z`. That is still large for a web
+  page (essentially the same as the previous WebGPU-only tree).
 
-A later pass needs a real browser file API (bytes into `open` / `save` / IFC import), a smaller
-download, and a decision on WebGL for browsers without WebGPU. The updater, the DWG child, the
-SpaceMouse and the MCP TCP port should stay desktop-only.
+A later pass needs a real browser file API (bytes into `open` / `save` / IFC import) and a
+smaller download. The updater, the DWG child, the SpaceMouse and the MCP TCP port should stay
+desktop-only.

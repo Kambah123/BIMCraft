@@ -12,6 +12,8 @@ struct Locals {
     // How they are scaled and moved from where they were made, while a view moves: 1 and nothing once its drawing is the exact one.
     k: f32,
     moved: vec2<f32>,
+    // Pad to 32 bytes: WebGL / downlevel devices require uniform bindings to be a multiple of 16.
+    _pad: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> r_locals: Locals;
 
