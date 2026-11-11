@@ -65,7 +65,11 @@ pub(crate) fn menu_button(ui: &mut Ui, label: &str, shown: &str, tip: &str, set_
             ..WidgetInfo::labeled(WidgetType::Button, enabled, label)
         });
         let p = ui.painter();
-        if r.hovered() {
+        // CampusBIM's are chips: the control's fill and a hairline, the hover's tint under the pointer.
+        if crate::style::campus() {
+            let fill = if r.hovered() { pal().hover_fill } else { pal().control };
+            p.rect(rect.shrink2(vec2(1.0, 1.0)), 4.0, fill, Stroke::new(1.0, pal().border), StrokeKind::Inside);
+        } else if r.hovered() {
             p.rect_filled(rect, 4.0, pal().hover_fill);
         }
         if r.has_focus() {

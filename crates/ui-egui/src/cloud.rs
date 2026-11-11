@@ -968,7 +968,7 @@ fn when_text(iso: &str) -> String {
 // ---------- the dialogs ----------
 
 fn primary(ui: &mut Ui, enabled: bool, label: &str) -> bool {
-    let b = egui::Button::new(RichText::new(label).strong().color(egui::Color32::WHITE)).fill(pal().accent);
+    let b = egui::Button::new(RichText::new(label).strong().color(pal().on_accent)).fill(pal().accent);
     ui.add_enabled(enabled, b).clicked()
 }
 
@@ -1336,18 +1336,30 @@ fn card(ui: &mut Ui, row: &Row, working: Option<&str>, current: bool) {
     let (rect, r) = ui.allocate_exact_size(vec2(CARD, CARD_PIC + 62.0), if busy { Sense::hover() } else { Sense::click() });
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !busy, &row.name));
     let hot = !busy && (r.hovered() || r.has_focus());
-    let rect = if hot { rect.translate(vec2(0.0, -2.0)) } else { rect };
-    let round = CornerRadius::same(12);
+    // CampusBIM's cards are flat: the card's fill, a 1 px edge in the accent's ink when hovered or open, corners of 8.
+    let campus = crate::style::campus();
+    let rect = if hot && !campus { rect.translate(vec2(0.0, -2.0)) } else { rect };
+    let round = CornerRadius::same(if campus { crate::style::CARD_RADIUS } else { 12 });
     {
         let p = ui.painter();
-        let shadow =
-            Shadow { offset: [0, if hot { 8 } else { 3 }], blur: if hot { 22 } else { 10 }, spread: 0, color: crate::start::shade(hot) };
-        p.add(shadow.as_shape(rect, round));
-        let edge = if hot || current { pal().accent } else { pal().border };
-        p.rect(rect, round, pal().surface, Stroke::new(if hot || current { 1.5 } else { 1.0 }, edge), StrokeKind::Inside);
+        if campus {
+            let edge = if hot || current { pal().accent_ink } else { pal().border };
+            p.rect(rect, round, if hot { pal().hover_fill } else { pal().panel }, Stroke::new(1.0, edge), StrokeKind::Inside);
+        } else {
+            let shadow = Shadow {
+                offset: [0, if hot { 8 } else { 3 }],
+                blur: if hot { 22 } else { 10 },
+                spread: 0,
+                color: crate::start::shade(hot),
+            };
+            p.add(shadow.as_shape(rect, round));
+            let edge = if hot || current { pal().accent } else { pal().border };
+            p.rect(rect, round, pal().surface, Stroke::new(if hot || current { 1.5 } else { 1.0 }, edge), StrokeKind::Inside);
+        }
     }
     let pic = Rect::from_min_size(rect.min + vec2(1.0, 1.0), vec2(CARD - 2.0, CARD_PIC));
-    let pic_round = CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 };
+    let corner = if campus { crate::style::CARD_RADIUS - 1 } else { 11 };
+    let pic_round = CornerRadius { nw: corner, ne: corner, sw: 0, se: 0 };
     let thumb = thumb_for(row);
     match thumb {
         Some(tex) => {
@@ -1457,13 +1469,34 @@ pub(crate) fn account_chip(app: &mut BimApp, ui: &mut Ui, at: egui::Rect) -> egu
         }
         None => t("Sign in").to_owned(),
     };
-    let galley = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(12.5), pal().app_bar_text);
-    let width = galley.size().x + 20.0;
-    let rect = egui::Rect::from_min_size(egui::pos2(at.left() - width - 8.0, at.top()), egui::vec2(width, at.height()));
-    let button = egui::Button::new(RichText::new(&label).color(pal().app_bar_text).size(12.5))
-        .fill(if email.is_some() { egui::Color32::TRANSPARENT } else { pal().accent.gamma_multiply(0.55) })
-        .corner_radius(12.0);
-    let r = ui.put(rect, button);
+    // Signed in: the account's initials in a forest-green disc; signed out, Sign in on CampusBIM's lime.
+    let lime = egui::Color32::from_rgb(0xd8, 0xf3, 0x6c);
+    let r = if let Some(e) = &email {
+        let initials: String =
+            e.split(['@', '.', '+', '_', '-']).filter(|w| !w.is_empty()).take(2).filter_map(|w| w.chars().next()).collect();
+        let initials = initials.to_uppercase();
+        let d = at.height().max(24.0);
+        let rect = egui::Rect::from_min_size(egui::pos2(at.left() - d - 8.0, at.center().y - d / 2.0), egui::vec2(d, d));
+        let r = ui.interact(rect, egui::Id::new("campusbim-account"), Sense::click());
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+        let p = ui.painter();
+        p.circle_filled(rect.center(), d / 2.0, egui::Color32::from_rgb(0x17, 0x6b, 0x4a));
+        if r.hovered() || r.has_focus() {
+            p.circle_stroke(rect.center(), d / 2.0 - 1.0, egui::Stroke::new(1.5, lime));
+        }
+        p.text(rect.center(), egui::Align2::CENTER_CENTER, initials, crate::style::semibold(11.0), egui::Color32::WHITE);
+        r
+    } else {
+        let galley = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(12.5), pal().app_bar_text);
+        let width = galley.size().x + 20.0;
+        let rect = egui::Rect::from_min_size(egui::pos2(at.left() - width - 8.0, at.top()), egui::vec2(width, at.height()));
+        let button = egui::Button::new(RichText::new(&label).color(egui::Color32::from_rgb(0x0a, 0x0f, 0x0c)).strong().size(12.5))
+            .fill(lime)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(6.0);
+        ui.put(rect, button)
+    };
+    let rect = r.rect;
     if email.is_none() {
         if r.clicked() {
             open_account(Mode::SignIn);
@@ -1479,6 +1512,20 @@ pub(crate) fn account_chip(app: &mut BimApp, ui: &mut Ui, at: egui::Rect) -> egu
         cloud_items(app, ui);
     });
     rect
+}
+
+/// Where the open project is kept, for the title's chip: changed since it was saved, saved to the cloud, or only here.
+pub(crate) fn save_state(app: &BimApp) -> (&'static str, crate::titlebar::Kept) {
+    use crate::titlebar::Kept;
+    if app.dirty() {
+        return ("Unsaved changes", Kept::Unsaved);
+    }
+    let uid = app.session.model.uid;
+    if with(|c| c.current.as_ref().is_some_and(|(_, _, u)| *u == uid)) {
+        ("Saved to cloud", Kept::Cloud)
+    } else {
+        ("Local only", Kept::Local)
+    }
 }
 
 /// File menu items: Save to Cloud, My Projects, and the account's.

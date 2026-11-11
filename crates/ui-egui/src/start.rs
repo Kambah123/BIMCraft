@@ -220,7 +220,8 @@ impl BimApp {
         let mut click = None;
         let bar = Frame::new().fill(pal().bar).inner_margin(egui::Margin::symmetric(20, 8)).stroke(Stroke::new(1.0, pal().border));
         Panel::bottom("start-footer").frame(bar).show(ui, |ui| self.start_footer(ui, &mut click));
-        egui::CentralPanel::default().frame(Frame::NONE.fill(pal().panel)).show(ui, |ui| {
+        let ground = if style::campus() { pal().desk } else { pal().panel };
+        egui::CentralPanel::default().frame(Frame::NONE.fill(ground)).show(ui, |ui| {
             backdrop(ui);
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let full = ui.available_width();
@@ -538,6 +539,9 @@ pub(crate) fn heading(ui: &mut Ui, text: &str) {
 
 /// A big button: an icon in a disc, a title, what it does and its shortcut.
 fn action(ui: &mut Ui, icon: Icon, title: &str, hint: &str, keys: &str) -> Response {
+    if style::campus() {
+        return campus_action(ui, icon, title, hint, keys);
+    }
     let title = t(title).to_string();
     let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click());
     r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &title));
@@ -550,7 +554,7 @@ fn action(ui: &mut Ui, icon: Icon, title: &str, hint: &str, keys: &str) -> Respo
     p.rect(rect, round, fill, Stroke::new(if hot { 1.5 } else { 1.0 }, if hot { pal().accent } else { pal().border }), StrokeKind::Inside);
     let disc = pos2(rect.left() + 36.0, rect.center().y);
     p.circle_filled(disc, 21.0, pal().accent.gamma_multiply(if hot { 1.0 } else { 0.14 }));
-    icons::paint(p, icon, Rect::from_center_size(disc, vec2(22.0, 22.0)), if hot { Color32::WHITE } else { pal().accent });
+    icons::paint(p, icon, Rect::from_center_size(disc, vec2(22.0, 22.0)), if hot { pal().on_accent } else { pal().accent_ink });
     let at = pos2(rect.left() + 70.0, rect.center().y);
     let clip = Rect::from_min_max(pos2(at.x, rect.top()), pos2(rect.right() - 8.0, rect.bottom()));
     let p = p.with_clip_rect(clip);
@@ -558,6 +562,49 @@ fn action(ui: &mut Ui, icon: Icon, title: &str, hint: &str, keys: &str) -> Respo
     p.text(at + vec2(0.0, 11.0), Align2::LEFT_CENTER, t(hint), FontId::proportional(12.0), pal().muted);
     if !keys.is_empty() {
         p.text(pos2(rect.right() - 14.0, rect.top() + 16.0), Align2::RIGHT_CENTER, keys, FontId::monospace(11.0), pal().muted);
+    }
+    r.on_hover_text(t(hint))
+}
+
+/// CampusBIM's big button (the welcome screen's): a flat card with a 1 px edge, the icon on a square tile (lime for a new project,
+/// and for any under the pointer), the title semibold, what it does under it, and its shortcut in an outlined key.
+fn campus_action(ui: &mut Ui, icon: Icon, title: &str, hint: &str, keys: &str) -> Response {
+    let title = t(title).to_string();
+    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::click());
+    r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &title));
+    let hot = r.hovered() || r.has_focus();
+    let p = ui.painter();
+    let round = CornerRadius::same(style::CARD_RADIUS);
+    let edge = if hot { pal().accent_ink } else { pal().border };
+    p.rect(rect, round, if hot { pal().hover_fill } else { pal().panel }, Stroke::new(1.0, edge), StrokeKind::Inside);
+    if r.has_focus() {
+        p.rect_stroke(rect, round, style::focus_ring(), StrokeKind::Inside);
+    }
+    let tile = Rect::from_center_size(pos2(rect.left() + 28.0, rect.center().y), vec2(32.0, 32.0));
+    let lit = hot || icon == Icon::NewFile;
+    p.rect(
+        tile,
+        6.0,
+        if lit { pal().accent } else { pal().control },
+        Stroke::new(1.0, if lit { pal().accent } else { pal().border }),
+        StrokeKind::Inside,
+    );
+    icons::paint(p, icon, tile.shrink(7.0), if lit { pal().on_accent } else { pal().icon });
+    let at = pos2(rect.left() + 56.0, rect.center().y);
+    let key_w = if keys.is_empty() {
+        0.0
+    } else {
+        ui.painter().layout_no_wrap(keys.to_string(), FontId::monospace(11.0), pal().muted).size().x + 14.0
+    };
+    // The title stops short of the key, at the top right; what it does runs the card's width under both.
+    let title_clip = Rect::from_min_max(pos2(at.x, rect.top()), pos2(rect.right() - 16.0 - key_w, rect.center().y));
+    p.with_clip_rect(title_clip).text(at - vec2(0.0, 9.0), Align2::LEFT_CENTER, &title, style::semibold(13.5), pal().text);
+    let hint_clip = Rect::from_min_max(pos2(at.x, rect.center().y), pos2(rect.right() - 10.0, rect.bottom()));
+    p.with_clip_rect(hint_clip).text(at + vec2(0.0, 9.0), Align2::LEFT_CENTER, t(hint), FontId::proportional(12.0), pal().muted);
+    if !keys.is_empty() {
+        let key = Rect::from_min_size(pos2(rect.right() - 10.0 - key_w, rect.top() + 9.0), vec2(key_w, 18.0));
+        p.rect(key, 4.0, Color32::TRANSPARENT, Stroke::new(1.0, pal().border), StrokeKind::Inside);
+        p.text(key.center(), Align2::CENTER_CENTER, keys, FontId::monospace(11.0), pal().muted);
     }
     r.on_hover_text(t(hint))
 }
@@ -598,6 +645,10 @@ fn backdrop(ui: &Ui) {
     while y < r.bottom() {
         p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(1.0, grid));
         y += step;
+    }
+    // CampusBIM's page is flat: the grid alone.
+    if style::campus() {
+        return;
     }
     let wash = Rect::from_min_size(r.min, vec2(r.width(), 320.0_f32.min(r.height())));
     let top = pal().accent.gamma_multiply(if style::dark() { 0.22 } else { 0.12 });

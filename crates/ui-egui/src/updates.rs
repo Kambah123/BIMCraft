@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::wasm_shims::bimcraft_update::{Note, State};
 #[cfg(feature = "native-services")]
 use bimcraft_update::{Note, State};
-use egui::{Button, Color32, Context, Frame, Id, OpenUrl, ProgressBar, RichText, Stroke, Ui, ViewportCommand, vec2};
+use egui::{Button, Context, Frame, Id, OpenUrl, ProgressBar, RichText, Stroke, Ui, ViewportCommand, vec2};
 
 use crate::lang::{t, tf};
 use crate::style::pal;
@@ -181,5 +181,5 @@ impl BimApp {
 
 /// The banner's main button, in the accent as the File tab is: whether it was clicked.
 fn primary(ui: &mut Ui, label: &str, tip: &str) -> bool {
-    ui.add(Button::new(RichText::new(t(label)).color(Color32::WHITE).strong()).fill(pal().accent)).on_hover_text(t(tip)).clicked()
+    ui.add(Button::new(RichText::new(t(label)).color(pal().on_accent).strong()).fill(pal().accent)).on_hover_text(t(tip)).clicked()
 }

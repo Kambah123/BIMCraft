@@ -20,6 +20,57 @@ pub const UPSTREAM: &str = "https://github.com/IPedrax/BIMCraft";
 
 thread_local! {
     static ABOUT: Cell<bool> = const { Cell::new(false) };
+    /// The look last kept in the browser, so it is written only when it changes.
+    static KEPT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Where the browser keeps the theme the user picked: the scheme's code and the theme, e.g. `campus-dark dark`.
+const LS_LOOK: &str = "campusbim.look";
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+/// The window's first look: the theme the user picked last time in this browser, else CampusBIM Dark.
+pub fn first_look(app: &mut crate::BimApp) {
+    let kept = storage().and_then(|s| s.get_item(LS_LOOK).ok().flatten()).unwrap_or_default();
+    let mut parts = kept.split_whitespace();
+    let scheme = parts.next().and_then(crate::style::Scheme::from_code);
+    let theme = match parts.next() {
+        Some("light") => Some(egui::ThemePreference::Light),
+        Some("dark") => Some(egui::ThemePreference::Dark),
+        Some("system") => Some(egui::ThemePreference::System),
+        _ => None,
+    };
+    match (scheme, theme) {
+        (Some(scheme), Some(theme)) => {
+            app.scheme = scheme;
+            app.theme_wanted = Some(theme);
+            KEPT.with(|k| *k.borrow_mut() = kept);
+        }
+        _ => {
+            app.scheme = crate::style::Scheme::CampusDark;
+            app.theme_wanted = Some(egui::ThemePreference::Dark);
+        }
+    }
+}
+
+/// Keeps the theme in the browser once the user has picked one (a pick differs from the first look).
+pub fn keep_look(app: &crate::BimApp, ctx: &Context) {
+    let theme = match ctx.options(|o| o.theme_preference) {
+        egui::ThemePreference::Light => "light",
+        egui::ThemePreference::Dark => "dark",
+        egui::ThemePreference::System => "system",
+    };
+    let now = format!("{} {theme}", app.scheme.code());
+    let first = app.theme_wanted.is_some() || (KEPT.with(|k| k.borrow().is_empty()) && now == "campus-dark dark");
+    if first || KEPT.with(|k| *k.borrow() == now) {
+        return;
+    }
+    if let Some(s) = storage() {
+        let _ = s.set_item(LS_LOOK, &now);
+    }
+    KEPT.with(|k| *k.borrow_mut() = now);
 }
 
 /// Opens the About dialog.
@@ -63,6 +114,19 @@ pub fn wordmark(ui: &mut Ui, size: f32) {
         ui.label(RichText::new("Campus").font(FontId::proportional(size)).color(pal().text));
         ui.label(RichText::new("BIM").font(FontId::proportional(size)).strong().color(bim));
     });
+}
+
+/// The app bar's logo: the cap and the wordmark, "BIM" in lime, as the bar is dark in both themes.
+pub fn app_bar_logo(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+    mark(ui, rect);
+    ui.add_space(-2.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(RichText::new("Campus").font(FontId::proportional(15.0)).color(pal().app_bar_text));
+        ui.label(RichText::new("BIM").font(crate::style::semibold(15.0)).color(Color32::from_rgb(0xd8, 0xf3, 0x6c)));
+    });
+    ui.add_space(6.0);
 }
 
 /// The start page's hero: the cap, the name and what it is.

@@ -62,6 +62,8 @@ fn app(cc: &eframe::CreationContext<'_>) -> BimApp {
     let mut app = BimApp::new(session);
     app.lang = language;
     app.own_title_bar = true;
+    // CampusBIM Dark, unless the user picked another theme in this browser before.
+    bimcraft_ui_egui::brand::first_look(&mut app);
     if let Some(state) = cc.wgpu_render_state.as_ref() {
         app.use_graphics_card(state);
     }

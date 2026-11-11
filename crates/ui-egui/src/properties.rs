@@ -602,10 +602,17 @@ pub(crate) fn group_header(ui: &mut Ui, group: &str, open: bool) -> bool {
     let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::CollapsingHeader, true, open, group));
     let p = ui.painter();
-    p.rect_filled(r, 0.0, if response.hovered() { pal().hover_fill } else { pal().bar });
-    p.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, group, FontId::proportional(13.0), pal().text);
-    // A chevron on the right, pointing down while the group is open.
-    let c = pos2(r.right() - 12.0, r.center().y);
+    let campus = crate::style::campus();
+    p.rect_filled(r, if campus { 4.0 } else { 0.0 }, if response.hovered() { pal().hover_fill } else { pal().bar });
+    // CampusBIM's header (the component sheet's): the chevron first, the name semibold after it.
+    let (text_at, font) = if campus {
+        (r.left_center() + vec2(24.0, 0.0), crate::style::semibold(12.5))
+    } else {
+        (r.left_center() + vec2(8.0, 0.0), FontId::proportional(13.0))
+    };
+    p.text(text_at, Align2::LEFT_CENTER, group, font, pal().text);
+    // A chevron on the right (on the left in CampusBIM's), pointing down while the group is open.
+    let c = if campus { pos2(r.left() + 12.0, r.center().y) } else { pos2(r.right() - 12.0, r.center().y) };
     let chevron =
         if open { [vec2(-4.0, -2.0), vec2(0.0, 2.0), vec2(4.0, -2.0)] } else { [vec2(-2.0, -4.0), vec2(2.0, 0.0), vec2(-2.0, 4.0)] };
     p.add(Shape::line(chevron.iter().map(|d| c + *d).collect(), Stroke::new(1.5, pal().icon)));

@@ -474,6 +474,17 @@ impl BimApp {
                 }
             }
         }
+        // CampusBIM's pair, each putting the window in its own theme.
+        for scheme in Scheme::CAMPUS {
+            if ui.radio(self.scheme == scheme, scheme.name()).clicked() {
+                (self.light_canvas, self.scheme) = (false, scheme);
+                ui.ctx().set_theme(if scheme == Scheme::CampusDark { ThemePreference::Dark } else { ThemePreference::Light });
+                ui.ctx().request_repaint();
+                if menu {
+                    ui.close();
+                }
+            }
+        }
         // The presets, dark ones: one picked puts the window dark in its colours.
         for scheme in Scheme::PRESETS {
             if ui.radio(self.scheme == scheme, scheme.name()).clicked() {

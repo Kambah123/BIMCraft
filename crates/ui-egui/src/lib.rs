@@ -12,7 +12,7 @@ use bimcraft_i18n::msg;
 mod assistant;
 mod background_grid;
 #[cfg(target_arch = "wasm32")]
-mod brand;
+pub mod brand;
 mod browser;
 mod cad;
 mod camera;
@@ -1058,14 +1058,21 @@ fn list_row_in(ui: &mut Ui, icon: Icon, label: &str, active: bool, tip: &str, tr
     };
     let p = ui.painter();
     p.rect_filled(rect, 6.0, fill);
+    if active {
+        active_bar(p, rect);
+    }
     if r.has_focus() {
         p.rect_stroke(rect, 6.0, style::focus_ring(), StrokeKind::Inside);
     }
     let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.4) };
-    let ink = if active { pal().accent_ink } else { pal().icon };
+    // CampusBIM letters the active row in the text's colour, semibold, beside its bar; the other themes in the accent's ink.
+    let (ink, text, font) = match (active, style::campus()) {
+        (true, true) => (pal().text, pal().text, style::semibold(13.0)),
+        (true, false) => (pal().accent_ink, pal().accent_ink, FontId::proportional(13.0)),
+        (false, _) => (pal().icon, pal().text, FontId::proportional(13.0)),
+    };
     icons::paint(p, icon, Rect::from_center_size(rect.left_center() + vec2(18.0, 0.0), vec2(20.0, 20.0)), dim(ink));
-    let text = if active { pal().accent_ink } else { pal().text };
-    p.text(rect.left_center() + vec2(38.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(13.0), dim(text));
+    p.text(rect.left_center() + vec2(38.0, 0.0), Align2::LEFT_CENTER, label, font, dim(text));
     if ribbon::editing_tools() {
         return edit_tool(ui, r, rect, name);
     }
@@ -1086,7 +1093,7 @@ fn edit_tool(ui: &Ui, r: Response, rect: Rect, name: &str) -> Response {
     p.rect(tick, 2.0, if shown { pal().accent } else { pal().surface }, Stroke::new(1.0, pal().accent_ink), StrokeKind::Inside);
     if shown {
         let ends = vec![tick.left_center() + vec2(2.5, 0.0), tick.center_bottom() - vec2(1.0, 3.0), tick.right_top() + vec2(-2.5, 3.0)];
-        p.line(ends, Stroke::new(1.5, Color32::WHITE));
+        p.line(ends, Stroke::new(1.5, pal().on_accent));
     }
     if r.clicked() {
         ribbon::toggle(name);
@@ -1190,13 +1197,21 @@ fn tab_button_with(ui: &mut Ui, label: &str, active: bool, contextual: bool, sen
     let (fill, stroke, ink) = match (contextual, active, r.hovered()) {
         (true, true, _) => (pal().context, Stroke::NONE, pal().on_context),
         (true, false, _) => (pal().context_fill, Stroke::new(1.0, pal().context.gamma_multiply(0.5)), pal().context),
+        // CampusBIM: the open tab is lettered in the text's colour over a 2 px accent underline, the others dimmer.
+        (false, true, _) if style::campus() => (Color32::TRANSPARENT, Stroke::NONE, pal().text),
+        (false, false, true) if style::campus() => (pal().hover_fill, Stroke::NONE, pal().text),
+        (false, false, false) if style::campus() => (Color32::TRANSPARENT, Stroke::NONE, pal().muted),
         (false, true, _) => (pal().select_fill, Stroke::NONE, pal().accent_ink),
         (false, false, true) => (pal().hover_fill, Stroke::NONE, pal().text),
         (false, false, false) => (Color32::TRANSPARENT, Stroke::NONE, pal().text),
     };
     let p = ui.painter();
-    let radius = CornerRadius::same(6);
+    let radius = CornerRadius::same(if style::campus() { 4 } else { 6 });
     p.rect(rect, radius, fill, stroke, StrokeKind::Inside);
+    if style::campus() && active && !contextual {
+        let line = Rect::from_min_max(pos2(rect.left() + 4.0, rect.bottom() - 2.0), pos2(rect.right() - 4.0, rect.bottom()));
+        p.rect_filled(line, 1.0, pal().accent);
+    }
     if r.has_focus() {
         p.rect_stroke(rect, radius, style::focus_ring(), StrokeKind::Inside);
     }
@@ -1235,11 +1250,20 @@ fn rail_button(ui: &mut Ui, icon: Icon, label: &str, open: bool) -> Response {
     };
     let p = ui.painter();
     p.rect_filled(rect, 6.0, fill);
+    if open {
+        active_bar(p, rect);
+    }
     if r.has_focus() {
         p.rect_stroke(rect, 6.0, style::focus_ring(), StrokeKind::Inside);
     }
     icons::paint(p, icon, Rect::from_center_size(rect.center(), vec2(19.0, 19.0)), ink);
     r.on_hover_text(label)
+}
+
+/// What marks the open rail tab and the active tool row: a 3 px bar of the accent down the left edge, 16 px tall.
+fn active_bar(p: &egui::Painter, rect: Rect) {
+    let bar = Rect::from_center_size(pos2(rect.left() + 1.5, rect.center().y), vec2(3.0, 16.0_f32.min(rect.height())));
+    p.rect_filled(bar, 1.5, pal().accent);
 }
 
 impl BimApp {
@@ -1679,6 +1703,8 @@ impl BimApp {
         crate::cloud::poll(self, &ctx);
         #[cfg(target_arch = "wasm32")]
         brand::about_window(&ctx);
+        #[cfg(target_arch = "wasm32")]
+        brand::keep_look(self, &ctx);
         self.dialog_answered();
         self.watch_window(&ctx);
         let view = self.view_title(self.sheet);
@@ -1800,16 +1826,26 @@ impl BimApp {
         Panel::top("start-title-bar").frame(Frame::new().fill(pal().app_bar)).exact_size(34.0).show_separator_line(false).show(ui, |ui| {
             let bar = ui.max_rect();
             titlebar::drag_area(ui, bar);
+            #[cfg(not(target_arch = "wasm32"))]
             ui.painter().text(
                 bar.left_center() + vec2(14.0, 0.0),
                 Align2::LEFT_CENTER,
-                if cfg!(target_arch = "wasm32") { "CampusBIM" } else { "BIMCraft" },
+                "BIMCraft",
                 FontId::proportional(12.5),
                 pal().app_bar_muted,
             );
+            // The browser's bar: CampusBIM's logo on the left and the page's name in the middle, as over a project.
             #[cfg(target_arch = "wasm32")]
             {
-                let right = bar.right() - 3.0 * titlebar::BUTTON_WIDTH - 4.0;
+                let logo = Rect::from_min_size(pos2(bar.left() + 10.0, bar.top()), vec2(160.0, bar.height()));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(logo).layout(Layout::left_to_right(Align::Center)), |ui| {
+                    style::on_app_bar(|| brand::app_bar_logo(ui));
+                });
+                ui.painter().text(bar.center(), Align2::CENTER_CENTER, t("Start"), style::semibold(13.0), pal().app_bar_text);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let right = bar.right() - titlebar::captions_width() - 4.0;
                 let at = Rect::from_min_size(pos2(right, bar.center().y - 12.0), vec2(0.0, 24.0));
                 cloud::account_chip(self, ui, at);
             }
@@ -3349,10 +3385,14 @@ impl BimApp {
         let ctx = ui.ctx().clone();
         let row = ui
             .horizontal(|ui| {
+                #[cfg(target_arch = "wasm32")]
+                brand::app_bar_logo(ui);
                 if icon_button(ui, Icon::Home, "Home").clicked() {
                     self.toggle_home();
                 }
-                let file = egui::Button::new(RichText::new(t("File")).color(pal().app_bar_text)).frame(false).min_size(vec2(44.0, 24.0));
+                let file = egui::Button::new(RichText::new(t("File")).font(style::semibold(13.0)).color(pal().app_bar_text))
+                    .frame(false)
+                    .min_size(vec2(44.0, 24.0));
                 MenuButton::from_button(file).ui(ui, |ui| self.file_menu(ui, &ctx));
                 if icon_button(ui, Icon::Open, "Open").clicked() {
                     self.guard(Pending::Open, &ctx);
@@ -3396,7 +3436,7 @@ impl BimApp {
         let gap = 12.0;
         // Which palettes show, in both profiles, at the bar's right end where an editor keeps its layout's buttons: a closed
         // palette comes back from here, the Tools palette too, which has no shortcut. The title's middle stays the window's.
-        let end = ui.max_rect().right() + if self.own_bar() { 8.0 - 3.0 * titlebar::BUTTON_WIDTH } else { 0.0 } - 4.0;
+        let end = ui.max_rect().right() + if self.own_bar() { 8.0 - titlebar::captions_width() } else { 0.0 } - 4.0;
         let at = Rect::from_min_size(pos2(end - 26.0, row.center().y - 12.0), vec2(26.0, 24.0));
         let palettes = ui.put(at, |ui: &mut Ui| icon_button(ui, Icon::Interface, msg!("Palettes")));
         egui::Popup::menu(&palettes).show(|ui| self.palette_switches(ui));
@@ -3405,16 +3445,35 @@ impl BimApp {
         let at = cloud::account_chip(self, ui, at);
         let right = at.left() - gap;
         let left = row.right() + gap;
-        let mut title = egui::text::LayoutJob::simple_singleline(
-            format!("{} · {view}", self.session.model.name),
-            FontId::proportional(12.5),
-            pal().app_bar_muted,
-        );
-        title.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(0.0));
+        // The project's name, then the view, and on the web where the work is kept (the cloud, only here, or not yet).
+        #[cfg(target_arch = "wasm32")]
+        let state = Some(cloud::save_state(self));
+        #[cfg(not(target_arch = "wasm32"))]
+        let state: Option<(&str, titlebar::Kept)> = None;
+        let chip = state.map(|(label, kept)| {
+            let g = ui.painter().layout_no_wrap(t(label).to_string(), FontId::proportional(11.5), pal().app_bar_text);
+            (g, kept)
+        });
+        let chip_w = chip.as_ref().map_or(0.0, |(g, _)| g.size().x + 30.0);
+        let mut title = egui::text::LayoutJob::default();
+        let (name_font, view_font) = if cfg!(target_arch = "wasm32") {
+            (style::semibold(13.0), FontId::proportional(12.5))
+        } else {
+            (FontId::proportional(12.5), FontId::proportional(12.5))
+        };
+        let name_ink = if cfg!(target_arch = "wasm32") { pal().app_bar_text } else { pal().app_bar_muted };
+        title.append(&self.session.model.name, 0.0, egui::TextFormat::simple(name_font, name_ink));
+        title.append(&format!(" · {view}"), 0.0, egui::TextFormat::simple(view_font, pal().app_bar_muted));
+        title.wrap = egui::text::TextWrapping::truncate_at_width((right - left - chip_w).max(0.0));
         let galley = ui.painter().layout_job(title);
-        let width = galley.size().x;
+        let width = galley.size().x + chip_w;
         let x = ui.max_rect().center().x.clamp(left + width / 2.0, (right - width / 2.0).max(left + width / 2.0));
+        let text_right = x - width / 2.0 + galley.size().x;
         ui.painter().galley(pos2(x - width / 2.0, row.center().y - galley.size().y / 2.0), galley, pal().app_bar_muted);
+        if let Some((g, kept)) = chip {
+            let rect = Rect::from_min_size(pos2(text_right + 10.0, row.center().y - 10.0), vec2(g.size().x + 20.0, 20.0));
+            titlebar::paint_chip(ui, rect, g, kept);
+        }
     }
 
     /// The arrow beside Undo (or with `redo`, Redo): a list of the steps, the next first, as Revit's. Hovering one marks it
@@ -3657,7 +3716,18 @@ impl BimApp {
                     };
                     let label = if plugin { label } else { t(&label).to_string() };
                     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-                    ui.painter().text(r.left_center(), Align2::LEFT_CENTER, label, style::semibold(13.0), pal().text);
+                    // CampusBIM heads the tab's tools as the component sheet does: small capitals in the accent's ink.
+                    if style::campus() {
+                        ui.painter().text(
+                            r.left_center(),
+                            Align2::LEFT_CENTER,
+                            label.to_uppercase(),
+                            style::semibold(11.5),
+                            pal().accent_ink,
+                        );
+                    } else {
+                        ui.painter().text(r.left_center(), Align2::LEFT_CENTER, label, style::semibold(13.0), pal().text);
+                    }
                     ribbon::rows(ui, |ui| self.tab_content(ui, open));
                 }
                 ribbon::skip_select(false);

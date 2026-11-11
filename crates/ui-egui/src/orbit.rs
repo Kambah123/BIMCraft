@@ -1591,7 +1591,8 @@ impl BimApp {
     /// The navigation bar, at the view's top right: Home (Revit's default orientation), fit, zoom.
     fn nav_bar3d(&mut self, ui: &mut Ui, p: &egui::Painter, rect: Rect) {
         let bar = Rect::from_min_size(self.nav_corner(rect), vec2(32.0, 104.0));
-        p.rect(bar, 6.0, pal().surface, Stroke::new(1.0, pal().border), StrokeKind::Inside);
+        let card = if crate::style::campus() { pal().panel } else { pal().surface };
+        p.rect(bar, 6.0, card, Stroke::new(1.0, pal().border), StrokeKind::Inside);
         ui.scope_builder(UiBuilder::new().max_rect(bar.shrink(3.0)).layout(Layout::top_down(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             if icon_button(ui, Icon::View3D, "Home View").clicked() {
