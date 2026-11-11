@@ -13,10 +13,12 @@ workspace = true
 [features]
 # Reads Revit's .rvt and .rfa files. That code is ported from rvt-rs and is Apache-2.0 only (docs/rvt-provenance.md),
 # so a build without it, which keeps the repository's MIT OR Apache-2.0, is `--no-default-features`.
-default = ["rvt", "dwg"]
+default = ["rvt", "dwg", "native-services"]
 rvt = ["dep:bimcraft-rvt"]
 # Reads DWG drawings in `import_cad`, through bimcraft-dwg, which uses acadrust (MPL-2.0, unmodified; NOTICE).
 dwg = ["dep:bimcraft-dwg"]
+# Desktop updater and AI assistant (ureq + rustls + ring). Off for a wasm / browser build.
+native-services = ["bimcraft-ui-egui/native-services", "dep:bimcraft-update", "dep:bimcraft-assistant"]
 
 [dependencies]
 bimcraft-i18n = { workspace = true }
@@ -24,12 +26,17 @@ bimcraft-core = { workspace = true }
 bimcraft-plugin = { workspace = true }
 bimcraft-rvt = { workspace = true, optional = true }
 bimcraft-dwg = { workspace = true, optional = true }
-bimcraft-ui-egui = { workspace = true }
-bimcraft-update = { workspace = true }
-bimcraft-assistant = { workspace = true }
+bimcraft-ui-egui = { workspace = true, default-features = false }
+bimcraft-update = { workspace = true, optional = true }
+bimcraft-assistant = { workspace = true, optional = true }
 eframe = { workspace = true }
 rfd = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "HtmlCanvasElement", "Window", "console"] }
 
 [dev-dependencies]
 # Synthetic Revit-shaped files for the test of the reader the window is given.

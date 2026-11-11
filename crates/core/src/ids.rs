@@ -42,9 +42,9 @@ impl Guid {
         let mut b = [0u8; 16];
         if getrandom::fill(&mut b).is_err() {
             static COUNT: AtomicU64 = AtomicU64::new(0);
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+            let nanos = crate::time::SystemTime::now().duration_since(crate::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
             let n = COUNT.fetch_add(1, Ordering::Relaxed);
-            let hi = crate::model::mix(nanos ^ u64::from(std::process::id()).rotate_left(32));
+            let hi = crate::model::mix(nanos ^ u64::from(crate::model::process_id()).rotate_left(32));
             let lo = crate::model::mix(hi ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             b = ((u128::from(hi) << 64) | u128::from(lo)).to_be_bytes();
         }

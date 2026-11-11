@@ -24,3 +24,7 @@ ttf-parser = { workspace = true }
 
 [build-dependencies]
 bimcraft-i18n = { workspace = true, features = ["catalog"] }
+
+# SystemTime/Instant on wasm32-unknown-unknown: std panics ("time not implemented on this platform").
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"

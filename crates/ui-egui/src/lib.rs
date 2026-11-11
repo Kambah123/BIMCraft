@@ -31,6 +31,8 @@ mod filter;
 mod find;
 mod footer;
 mod gpu;
+#[cfg(not(feature = "native-services"))]
+mod wasm_shims;
 pub use gpu::limits_for;
 mod graphics;
 mod groups;
@@ -830,7 +832,10 @@ pub struct BimApp {
     title: String,
     styled: bool,
     /// The updater, which the desktop app attaches: a window starts without one, and so never phones home.
+    #[cfg(feature = "native-services")]
     pub updates: Option<bimcraft_update::Updater>,
+    #[cfg(not(feature = "native-services"))]
+    pub updates: Option<crate::wasm_shims::bimcraft_update::Updater>,
     /// The Assistant palette's: the user's provider, model and key, and the chat, which the desktop app gives a network (`assistant::State::attach`): a window starts without one.
     pub assistant: assistant::State,
     /// The 3D mouse's reader, which the desktop app attaches: a window starts without one, so a test never opens a device.

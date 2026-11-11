@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" rx="28" fill="#0a0f0c"/><g transform="translate(6,8) scale(0.9)">  <!-- cap body -->
+  <path d="M30 58 V80 Q60 96 90 80 V58 L60 72 Z" fill="#176b4a"/>
+  <!-- board top (isometric diamond) -->
+  <path d="M60 22 L108 46 L60 70 L12 46 Z" fill="#0f4d35"/>
+  <path d="M60 22 L108 46 L60 70 L12 46 Z" fill="none" stroke="#d8f36c" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- floor plan grid on board -->
+  <path d="M36 34 L84 58 M84 34 L36 58" stroke="#d8f36c" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- tassel -->
+  <path d="M60 46 L98 51 V78" fill="none" stroke="#8be8b5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M94 78 h8 l-1 12 h-6 z" fill="#8be8b5"/>
+  <circle cx="60" cy="46" r="3.5" fill="#d8f36c"/></g></svg>

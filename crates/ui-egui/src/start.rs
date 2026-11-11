@@ -4,13 +4,16 @@
 
 use bimcraft_i18n::msg;
 
+use bimcraft_core::time::{Duration, SystemTime};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::{Duration, SystemTime};
 
+#[cfg(not(feature = "native-services"))]
+use crate::wasm_shims::bimcraft_update::State;
 use bimcraft_core::model::Model;
 use bimcraft_core::view3d::{AZIMUTH, ELEVATION, Scene};
+#[cfg(feature = "native-services")]
 use bimcraft_update::State;
 use egui::epaint::{Mesh, PathShape, Shadow};
 use egui::{
@@ -418,7 +421,11 @@ impl BimApp {
         let clip = Rect::from_min_max(text_at, pos2(rect.right() - 12.0, rect.bottom()));
         let p = p.with_clip_rect(clip);
         p.text(text_at, Align2::LEFT_TOP, name, FontId::proportional(14.5), ink);
-        let when = std::fs::metadata(path).and_then(|m| m.modified()).ok().map(ago);
+        let when = std::fs::metadata(path).and_then(|m| m.modified()).ok().map(|st| {
+            // std::fs yields std::time::SystemTime; on wasm that is not the web-time alias ago() takes.
+            let when = st.duration_since(std::time::UNIX_EPOCH).map(|d| SystemTime::UNIX_EPOCH + d).unwrap_or(SystemTime::UNIX_EPOCH);
+            ago(when)
+        });
         let folder = path.parent().and_then(Path::file_name).map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         let detail = match when {
             Some(w) if !folder.is_empty() => format!("{folder} · {w}"),

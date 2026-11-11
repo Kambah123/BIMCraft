@@ -226,7 +226,7 @@ pub struct Orbit {
     pub(crate) hot_grip: Option<usize>,
     /// What the view is showing while its scene or mesh is made, and since when it has been waiting.
     pub(crate) waiting: Option<Waiting>,
-    pub(crate) waiting_since: Option<std::time::Instant>,
+    pub(crate) waiting_since: Option<bimcraft_core::time::Instant>,
     /// Holds a scene being made back, for a test to see the view wait.
     pub(crate) hold_build: bool,
     /// A section box's grip being dragged: which face (as `view3d::box_grips` orders them), and where the drag began.
@@ -1556,7 +1556,7 @@ impl BimApp {
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, color(render::PAPER));
         let o = &mut self.orbit;
-        let since = *o.waiting_since.get_or_insert_with(std::time::Instant::now);
+        let since = *o.waiting_since.get_or_insert_with(bimcraft_core::time::Instant::now);
         let picture = match o.picture_size {
             Some(size) if o.on_card => self.card.gpu.as_ref().and_then(|g| g.texture()).map(|id| (id, size)),
             Some(size) => o.texture.as_ref().map(|t| (t.id(), size)),

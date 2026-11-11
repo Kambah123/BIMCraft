@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 use egui::{Align, Color32, ComboBox, Context, Id as UiId, Layout, RichText, ScrollArea, ThemePreference, Ui, vec2};
 use serde_json::{Value, json};
 
+#[cfg(not(feature = "native-services"))]
+use crate::wasm_shims::bimcraft_assistant::{Provider, model_ok, seal};
+#[cfg(feature = "native-services")]
 use bimcraft_assistant::{Provider, model_ok, seal};
 
 use crate::BimApp;
@@ -703,8 +706,8 @@ impl BimApp {
             ui.horizontal(|ui| {
                 ui.label(t("Save a recovery copy every"));
                 if ui.add(egui::DragValue::new(&mut self.autosave.interval_minutes).range(1..=120).suffix(" min")).changed() {
-                    self.autosave.next_due =
-                        std::time::Instant::now() + std::time::Duration::from_secs(u64::from(self.autosave.interval_minutes) * 60);
+                    self.autosave.next_due = bimcraft_core::time::Instant::now()
+                        + bimcraft_core::time::Duration::from_secs(u64::from(self.autosave.interval_minutes) * 60);
                 }
             });
         }
