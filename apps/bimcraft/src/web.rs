@@ -42,6 +42,10 @@ pub fn start() {
             Ok(()) => {
                 web_sys::console::log_1(&"bimcraft: eframe started".into());
                 let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__bimcraftReady"), &JsValue::TRUE);
+                // CampusBIM's loading screen (index.html) gives way to the app.
+                if let Some(el) = document.get_element_by_id("campusbim-loading") {
+                    el.remove();
+                }
             }
             Err(err) => web_sys::console::error_1(&err),
         }

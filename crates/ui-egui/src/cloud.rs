@@ -1504,4 +1504,9 @@ pub(crate) fn cloud_items(app: &mut BimApp, ui: &mut Ui) {
         open_account(Mode::SignIn);
         ui.close();
     }
+    ui.separator();
+    if ui.button(t("About CampusBIM")).clicked() {
+        crate::brand::open_about();
+        ui.close();
+    }
 }

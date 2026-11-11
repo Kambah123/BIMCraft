@@ -15,10 +15,10 @@ use bimcraft_core::model::Model;
 use bimcraft_core::view3d::{AZIMUTH, ELEVATION, Scene};
 #[cfg(feature = "native-services")]
 use bimcraft_update::State;
-use egui::epaint::{Mesh, PathShape, Shadow};
+use egui::epaint::{Mesh, Shadow};
 use egui::{
-    Align, Align2, Color32, ColorImage, Context, CornerRadius, FontId, Frame, Layout, OpenUrl, Panel, Pos2, Rect, Response, RichText,
-    ScrollArea, Sense, Shape, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
+    Align, Align2, Color32, ColorImage, Context, CornerRadius, FontId, Frame, Layout, OpenUrl, Panel, Rect, Response, RichText, ScrollArea,
+    Sense, Shape, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 use crate::icons::{self, Icon};
@@ -26,8 +26,11 @@ use crate::lang::{t, tf};
 use crate::style::{self, pal};
 use crate::{BimApp, Pending};
 
-/// Where the source code is.
+/// Where the source code is: CampusBIM's fork on the web, BIMCraft's own on the desktop.
+#[cfg(not(target_arch = "wasm32"))]
 pub const SOURCE: &str = "https://github.com/IPedrax/BIMCraft";
+#[cfg(target_arch = "wasm32")]
+pub const SOURCE: &str = crate::brand::SOURCE;
 /// A tile's picture, px (drawn at twice that, for sharp screens).
 const THUMB: [u32; 2] = [232, 136];
 /// A project file bigger than this gets no picture: drawing one would hold the thread too long.
@@ -288,6 +291,9 @@ impl BimApp {
 
     /// The logo, the name and what it is.
     fn start_hero(&self, ui: &mut Ui) {
+        #[cfg(target_arch = "wasm32")]
+        crate::brand::hero(ui);
+        #[cfg(not(target_arch = "wasm32"))]
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::hover());
             logo(ui, rect);
@@ -463,6 +469,8 @@ impl BimApp {
             }
             ui.label(RichText::new("·").color(pal().muted));
             ui.label(RichText::new(tf("Version {}", &[env!("CARGO_PKG_VERSION")])).color(pal().muted));
+            #[cfg(target_arch = "wasm32")]
+            crate::brand::credit(ui);
             if !self.status.text.is_empty() {
                 ui.label(RichText::new("·").color(pal().muted));
                 let ink = if self.status.error { pal().error } else { pal().muted };
@@ -613,6 +621,7 @@ pub(crate) fn dashed(ui: &Ui, r: Rect) {
 }
 
 /// BIMCraft's logo (`assets/app-icon/bimcraft.svg`), drawn into `r`.
+#[cfg(not(target_arch = "wasm32"))]
 fn logo(ui: &Ui, r: Rect) {
     let k = r.width() / 256.0;
     let at = |x: f32, y: f32| r.min + vec2(x, y) * k;
@@ -630,8 +639,8 @@ fn logo(ui: &Ui, r: Rect) {
     let (orange, cream, teal) =
         (Color32::from_rgb(0xF0, 0x7A, 0x3A), Color32::from_rgb(0xF4, 0xEC, 0xD8), Color32::from_rgb(0x1F, 0x9D, 0x7F));
     let poly = |pts: &[(f32, f32)], fill: Color32, w: f32| {
-        let pts: Vec<Pos2> = pts.iter().map(|&(x, y)| at(x, y)).collect();
-        p.add(PathShape::convex_polygon(pts, fill, Stroke::new(w * k, ink)));
+        let pts: Vec<egui::Pos2> = pts.iter().map(|&(x, y)| at(x, y)).collect();
+        p.add(egui::epaint::PathShape::convex_polygon(pts, fill, Stroke::new(w * k, ink)));
     };
     p.line_segment([at(138.0, 62.0), at(200.0, 62.0)], Stroke::new(7.0 * k, ink));
     poly(&[(187.0, 37.0), (213.0, 37.0), (200.0, 59.0)], orange, 6.0);

@@ -11,6 +11,8 @@ use bimcraft_i18n::msg;
 
 mod assistant;
 mod background_grid;
+#[cfg(target_arch = "wasm32")]
+mod brand;
 mod browser;
 mod cad;
 mod camera;
@@ -1675,12 +1677,20 @@ impl BimApp {
         crate::web_files::poll(self, &ctx);
         #[cfg(target_arch = "wasm32")]
         crate::cloud::poll(self, &ctx);
+        #[cfg(target_arch = "wasm32")]
+        brand::about_window(&ctx);
         self.dialog_answered();
         self.watch_window(&ctx);
         let view = self.view_title(self.sheet);
-        let title = format!("{}{} · {view} · BIMCraft", self.session.model.name, if self.dirty() { "*" } else { "" });
+        #[cfg(not(target_arch = "wasm32"))]
+        let app_name = "BIMCraft";
+        #[cfg(target_arch = "wasm32")]
+        let app_name = brand::NAME;
+        let title = format!("{}{} · {view} · {app_name}", self.session.model.name, if self.dirty() { "*" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
+            #[cfg(target_arch = "wasm32")]
+            brand::set_tab_title(&title);
             self.title = title;
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing && (self.installing() || self.dirty()) {
@@ -1793,7 +1803,7 @@ impl BimApp {
             ui.painter().text(
                 bar.left_center() + vec2(14.0, 0.0),
                 Align2::LEFT_CENTER,
-                "BIMCraft",
+                if cfg!(target_arch = "wasm32") { "CampusBIM" } else { "BIMCraft" },
                 FontId::proportional(12.5),
                 pal().app_bar_muted,
             );
