@@ -35,6 +35,7 @@ mod filter;
 mod find;
 mod footer;
 mod gpu;
+mod gpu_guard;
 #[cfg(not(feature = "native-services"))]
 mod wasm_shims;
 pub mod web_files;
@@ -5578,6 +5579,7 @@ impl BimApp {
 
 impl eframe::App for BimApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        crate::view_worker::next_frame();
         self.show(ui);
     }
 

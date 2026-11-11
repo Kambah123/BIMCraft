@@ -54,6 +54,8 @@ pub struct Card {
     pub(crate) canvas: Option<std::sync::Arc<crate::retained::Pipeline>>,
     /// Making the 2D pipeline failed (wgpu panics on some downlevel limits); the canvas stays on the processor.
     canvas_failed: bool,
+    /// Times the card's steps in the browser and puts the 3D view on the processor when one holds up the page.
+    pub(crate) guard: crate::gpu_guard::Guard,
 }
 
 /// Says how the 3D view is drawn in the browser's console; nothing on the desktop, which has its status bar and settings.
@@ -99,7 +101,16 @@ pub(crate) fn timed(_on_card: bool, _ms: f64) {}
 /// Wanted from the start: a window with a card draws on it unless the user says otherwise.
 impl Default for Card {
     fn default() -> Card {
-        Card { wanted: true, state: None, gpu: None, note: None, failed: false, canvas: None, canvas_failed: false }
+        Card {
+            wanted: true,
+            state: None,
+            gpu: None,
+            note: None,
+            failed: false,
+            canvas: None,
+            canvas_failed: false,
+            guard: crate::gpu_guard::Guard::for_build(),
+        }
     }
 }
 
@@ -147,10 +158,26 @@ impl Card {
             && !self.failed
             && let Some(state) = &self.state
         {
-            match Gpu::new(state) {
+            if let Some(why) = self.guard.barred() {
+                say(&format!("3D view on the processor: {why} (add ?gpu3d=retry to the address to try the card again)"));
+                (self.failed, self.note) = (true, Some(why));
+                return None;
+            }
+            self.guard.arm();
+            let began = bimcraft_core::time::Instant::now();
+            let made = Gpu::new(state);
+            let ms = began.elapsed().as_secs_f64() * 1000.0;
+            let made = match made {
+                Ok(gpu) => match self.guard.step("starting the card", ms, false) {
+                    Ok(()) => Ok(gpu),
+                    Err(why) => Err(why),
+                },
+                Err(e) => Err(e),
+            };
+            match made {
                 Ok(gpu) => {
                     say(&format!(
-                        "3D view on the graphics card: {} ({:?}, {})",
+                        "3D view on the graphics card: {} ({:?}, {}), ready in {ms:.0} ms",
                         gpu.adapter(),
                         state.adapter.get_info().backend,
                         gpu.path()

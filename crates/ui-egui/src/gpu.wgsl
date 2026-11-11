@@ -702,8 +702,14 @@ fn fs_wire(in: WireOut) -> @location(0) vec4<f32> {
         first = max(floor(min(i, j)), 0.0);
         last = min(ceil(max(i, j)), steps);
     }
+    // A few steps at most can land in one pixel (the longer way moves at least 1/sqrt(2) px a step); the loop is counted
+    // in whole numbers, with a hard cap, so that no driver (fast float maths, a NaN from a degenerate line) can spin in it.
     var landed = false;
-    for (var k = first; k <= last; k += 1.0) {
+    for (var n = 0; n < 8; n += 1) {
+        let k = first + f32(n);
+        if !(k <= last) {
+            break;
+        }
         if all(floor(in.p + d * (k / steps)) == at) {
             landed = true;
             break;

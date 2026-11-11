@@ -6,6 +6,28 @@ use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 
 type Task = Box<dyn FnOnce() + Send>;
 
+thread_local! {
+    /// The window's frame now, and the last frame a job was done on its thread (the browser's way).
+    static FRAMES: std::cell::Cell<(u64, Option<u64>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+/// A new frame of the window begins.
+pub(crate) fn next_frame() {
+    FRAMES.with(|f| {
+        let (now, ran) = f.get();
+        f.set((now.wrapping_add(1), ran));
+    });
+}
+
+/// Whether no job has been done on the window's thread this frame yet; if so, one is now.
+fn first_this_frame() -> bool {
+    FRAMES.with(|f| {
+        let (now, ran) = f.get();
+        f.set((now, Some(now)));
+        ran != Some(now)
+    })
+}
+
 /// Cooperative cancellation; identity also names a generation across counter wrap/undo.
 #[derive(Clone, Default)]
 pub(crate) struct Cancel(Arc<AtomicBool>);
@@ -128,6 +150,13 @@ impl<I: Send + 'static, O: Send + 'static> Latest<I, O> {
         // A browser's wasm has no threads to start: the job is done here, on the window's thread, and its result is ready
         // for the next frame, as a worker's would be.
         if cfg!(target_arch = "wasm32") {
+            // One job a frame, so that the page paints (and answers) between the scene, its mesh and the upload, rather
+            // than doing them back to back in one long task. The next frame picks it up: the caller asks for one.
+            if !first_this_frame() {
+                drop(state);
+                (self.wake)();
+                return Ok(());
+            }
             state.running = true;
             drop(state);
             Self::run(Arc::downgrade(&self.state), Arc::clone(&self.wake));

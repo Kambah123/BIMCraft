@@ -1005,7 +1005,17 @@ impl BimApp {
         if let (Some(mesh_to_upload), Some(gpu)) = (mesh.as_ref(), self.card.gpu.as_mut())
             && !cfg!(test)
         {
-            match gpu.prepare_upload(ui.ctx(), mesh_to_upload) {
+            let began = bimcraft_core::time::Instant::now();
+            let ready = gpu.prepare_upload(ui.ctx(), mesh_to_upload);
+            // The upload is made on the page's thread in a browser: one that holds it up too long puts the view on the processor.
+            let ready = match self.card.guard.step("loading the 3D view onto the card", began.elapsed().as_secs_f64() * 1000.0, false) {
+                Ok(()) => ready,
+                Err(why) => {
+                    self.card.failed = true;
+                    Err(why)
+                }
+            };
+            match ready {
                 Ok(true) => {}
                 Ok(false) => {
                     self.wait3d(ui, rect, crate::lang::t("Loading 3D view onto the card…"), false);
@@ -1063,7 +1073,17 @@ impl BimApp {
                 gpu.swapped_ink = crate::style::canvas_dark();
                 // The model's box, whichever the mesh was made under.
                 let cut = reboxed.or(boxed);
-                match gpu.draw_cut(mesh, &cam, &tints, rgb(color(render::PAPER)), cut) {
+                let picture = gpu.draw_cut(mesh, &cam, &tints, rgb(color(render::PAPER)), cut);
+                let whole = matches!(picture, Ok(true));
+                let picture = match (picture, self.card.guard.step("a 3D picture", began.elapsed().as_secs_f64() * 1000.0, whole)) {
+                    (Ok(whole), Ok(())) => Ok(whole),
+                    (Err(e), _) => Err(e),
+                    (Ok(_), Err(why)) => {
+                        self.card.failed = true;
+                        Err(why)
+                    }
+                };
+                match picture {
                     Ok(whole) => {
                         o.picker = Some(Picker::Mesh(Arc::clone(mesh), tints.clone(), cut));
                         (drawn, exact) = (true, whole);
@@ -1112,6 +1132,10 @@ impl BimApp {
             if !exact {
                 ui.ctx().request_repaint();
             }
+        }
+        // The browser's watchdog counts the frames the card's picture stays up (`gpu_guard.rs`).
+        if o.on_card && self.card.guard.frame() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
         (o.waiting, o.waiting_since) = (None, None);
         o.picture_size = Some(rect.size());
