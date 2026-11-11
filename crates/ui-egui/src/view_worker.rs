@@ -125,6 +125,14 @@ impl<I: Send + 'static, O: Send + 'static> Latest<I, O> {
         if state.running || state.pending.is_none() {
             return Ok(());
         }
+        // A browser's wasm has no threads to start: the job is done here, on the window's thread, and its result is ready
+        // for the next frame, as a worker's would be.
+        if cfg!(target_arch = "wasm32") {
+            state.running = true;
+            drop(state);
+            Self::run(Arc::downgrade(&self.state), Arc::clone(&self.wake));
+            return Ok(());
+        }
         let pool = Pool::shared()?;
         state.running = true;
         let weak = Arc::downgrade(&self.state);

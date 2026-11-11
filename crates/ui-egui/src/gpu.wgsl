@@ -78,16 +78,14 @@ struct Seg {
 }
 
 @group(0) @binding(0) var<uniform> g: Globals;
-@group(0) @binding(1) var<storage, read> owners: array<Owner>;
-@group(0) @binding(2) var<storage, read> segs: array<Seg>;
-@group(0) @binding(3) var<storage, read> skins: array<Skin>;
-@group(0) @binding(4) var<storage, read> texels: array<u32>;
-// Each copy's triangles' plane numbers, from where its instance says.
-@group(0) @binding(5) var<storage, read> planes: array<u32>;
+// The rest of group 0 (each element's colours, the levels' lines, the textures' lookups and texels, and each copy's
+// triangles' plane numbers) and the opaque surfaces' depth are read through `owner_at`, `skin_at`, `texel_word`,
+// `plane_at`, `opaque_depth` and `vs_line`, and the id target is written through `pack_ids` (an `Ids`). Two files give
+// them, one of which follows this one: `gpu_storage.wgsl` from storage buffers and the depth texture, and
+// `gpu_webgl.wgsl` from textures, the depth kept in the id target, for WebGL2, which has neither.
 
 @group(1) @binding(0) var scene_color: texture_2d<f32>;
 @group(1) @binding(1) var scene_ids: texture_2d<u32>;
-@group(1) @binding(2) var scene_depth: texture_depth_2d;
 
 @group(2) @binding(0) var clear_color: texture_2d<f32>;
 @group(2) @binding(1) var clear_ids: texture_2d<u32>;
@@ -101,14 +99,14 @@ fn lit(n: vec3<f32>) -> f32 {
 fn texel(s: Skin, x: i32, y: i32) -> vec3<f32> {
     let w = i32(s.level.y);
     let h = i32(s.level.z);
-    let t = texels[s.level.x + u32(((y % h) + h) % h * w + ((x % w) + w) % w)];
+    let t = texel_word(s.level.x + u32(((y % h) + h) % h * w + ((x % w) + w) % w));
     return vec3<f32>(f32(t & 255u), f32((t >> 8u) & 255u), f32((t >> 16u) & 255u));
 }
 
 // What `Sampler::at` gives: the texture laid over the face's plane at the point `world` (from the mesh's origin), across
 // the plane's level direction and up it, wrapping and blended between the four pixels round it.
 fn skin_color(id: u32, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    let s = skins[id];
+    let s = skin_at(id);
     if s.level.y == 0u || s.level.z == 0u {
         return vec3<f32>(128.0);
     }
@@ -207,7 +205,7 @@ fn normal_of(n: vec3<f32>, c: InstanceIn) -> vec3<f32> {
 }
 
 fn placed(v: SceneIn, c: InstanceIn, k: u32, owner: u32) -> SceneOut {
-    let plane = planes[c.planes + k / 3u];
+    let plane = plane_at(c.planes + k / 3u);
     let position = moved(v.position, c) + c.at;
     return scene_out(position, normal_of(v.normal.xyz, c), normal_of(v.face.xyz, c), v.color, vec2<u32>(plane, owner), v.tex);
 }
@@ -225,7 +223,7 @@ fn vs_instanced_clear(v: SceneIn, c: InstanceIn, @builtin(vertex_index) k: u32) 
 
 struct SceneTargets {
     @location(0) color: vec4<f32>,
-    @location(1) ids: vec2<u32>,
+    @location(1) ids: Ids,
 }
 
 // A surface's colour, lit (0 to 255), untinted: the tint is the picture's (fs_post), so a selection changes no surface.
@@ -240,7 +238,7 @@ fn shaded(in: SceneOut, front: bool) -> vec3<f32> {
 fn scene_targets(in: SceneOut, front: bool) -> SceneTargets {
     var out: SceneTargets;
     out.color = vec4<f32>(shaded(in, front) / 255.0, 1.0);
-    out.ids = in.ids;
+    out.ids = pack_ids(in.ids, in.clip.z);
     return out;
 }
 
@@ -273,7 +271,7 @@ struct ClearTargets {
 @fragment
 fn fs_clear(in: SceneOut, @builtin(front_facing) front: bool) -> ClearTargets {
     let tie = max(fwidth(in.clip.z) / 64.0, 2.5e-7);
-    if in.clip.z <= textureLoad(scene_depth, vec2<i32>(in.clip.xy), 0) + tie || (g.cut_lo.w > 0.5 && cut_away(in.world)) {
+    if in.clip.z <= opaque_depth(vec2<i32>(in.clip.xy)) + tie || (g.cut_lo.w > 0.5 && cut_away(in.world)) {
         discard;
     }
     var out: ClearTargets;
@@ -310,7 +308,7 @@ fn depth_at(x: i32, y: i32) -> f32 {
     if textureLoad(scene_ids, vec2<i32>(x, y), 0).x == DOT_PLANE {
         return 0.0;
     }
-    return textureLoad(scene_depth, vec2<i32>(x, y), 0);
+    return opaque_depth(vec2<i32>(x, y));
 }
 
 // A pixel's worth of depth where the depth is `d`, as the core's `Camera::slack` gives it.
@@ -380,7 +378,7 @@ fn outlined(x: i32, y: i32) -> bool {
             var p = 0u;
             if inside {
                 p = textureLoad(scene_ids, q, 0).x;
-                d = textureLoad(scene_depth, q, 0);
+                d = opaque_depth(q);
             }
             // The processor finds silhouettes before a scan's points are drawn: a pixel a point covers is asked of no neighbour.
             if p == DOT_PLANE {
@@ -431,14 +429,14 @@ fn fs_post(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         // In the tint where the pixel's own element is tinted, else in the edge colour of the first element of it, the pixel
         // to its right and the one below it that shows one.
         var color = vec3<f32>(48.0);
-        if here.y != 0u && owners[here.y - 1u].tint.w > 0.5 {
-            color = owners[here.y - 1u].tint.xyz;
+        if here.y != 0u && owner_at(here.y - 1u).tint.w > 0.5 {
+            color = owner_at(here.y - 1u).tint.xyz;
         } else if here.y != 0u {
-            color = owners[here.y - 1u].edge.xyz;
+            color = owner_at(here.y - 1u).edge.xyz;
         } else if right.y != 0u && right.x != DOT_PLANE {
-            color = owners[right.y - 1u].edge.xyz;
+            color = owner_at(right.y - 1u).edge.xyz;
         } else if below.y != 0u && below.x != DOT_PLANE {
-            color = owners[below.y - 1u].edge.xyz;
+            color = owner_at(below.y - 1u).edge.xyz;
         }
         rgb = color;
     } else if here.y != 0u {
@@ -446,10 +444,10 @@ fn fs_post(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
             rgb = bytes(textureLoad(scene_color, vec2<i32>(x, y), 0));
         }
         if g.display.z > 0.5 && !on_dot {
-            rgb = floor(rgb * ambient(x, y, textureLoad(scene_depth, vec2<i32>(x, y), 0)) + vec3<f32>(0.5));
+            rgb = floor(rgb * ambient(x, y, opaque_depth(vec2<i32>(x, y))) + vec3<f32>(0.5));
         }
-        if owners[here.y - 1u].tint.w > 0.5 {
-            rgb = floor((rgb + owners[here.y - 1u].tint.xyz) / 2.0);
+        if owner_at(here.y - 1u).tint.w > 0.5 {
+            rgb = floor((rgb + owner_at(here.y - 1u).tint.xyz) / 2.0);
         }
     }
     // Over it, the nearest surface seen through, as much of it as the view lets show (and a tinted one always a little, or
@@ -457,7 +455,7 @@ fn fs_post(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if g.size.w > 0.5 {
         let clear = textureLoad(clear_ids, vec2<i32>(x, y), 0).x;
         if clear != 0u {
-            let owner = owners[clear - 1u];
+            let owner = owner_at(clear - 1u);
             var s = bytes(textureLoad(clear_color, vec2<i32>(x, y), 0));
             var weight = owner.edge.w;
             if owner.tint.w > 0.5 {
@@ -514,7 +512,7 @@ fn vs_dot(v: DotIn, @builtin(vertex_index) i: u32) -> DotOut {
 fn fs_dot(in: DotOut) -> SceneTargets {
     var out: SceneTargets;
     out.color = vec4<f32>(in.color / 255.0, 1.0);
-    out.ids = in.ids;
+    out.ids = pack_ids(in.ids, in.clip.z);
     return out;
 }
 
@@ -543,10 +541,8 @@ fn to_pixel(p: vec3<f32>) -> vec3<f32> {
     );
 }
 
-// Each segment is a quad of two triangles, as wide as it says and half a pixel longer at each end.
-@vertex
-fn vs_line(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> LineOut {
-    let s = segs[k];
+// Each segment is a quad of two triangles, as wide as it says and half a pixel longer at each end (`vs_line` gives it).
+fn line_out(s: Seg, i: u32) -> LineOut {
     let a = to_pixel(s.a.xyz);
     let b = to_pixel(s.b.xyz);
     let d = b.xy - a.xy;
@@ -569,7 +565,7 @@ fn vs_line(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> Li
 
 @fragment
 fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    let behind = textureLoad(scene_depth, vec2<i32>(in.clip.xy), 0);
+    let behind = opaque_depth(vec2<i32>(in.clip.xy));
     var slack = g.size.z;
     if g.lens.x > 0.0 {
         slack = g.size.z * (in.depth - g.lens.z);
@@ -669,7 +665,7 @@ fn wire_quad(w: WireIn, i: u32) -> WireOut {
     o.clip = vec4<f32>(xy.x / g.size.x * 2.0 - 1.0, 1.0 - xy.y / g.size.y * 2.0, 0.5, 1.0);
     o.p = p;
     o.q = q;
-    let owner = owners[w.owner - 1u];
+    let owner = owner_at(w.owner - 1u);
     o.color = select(owner.edge.xyz, owner.tint.xyz, owner.tint.w > 0.5);
     return o;
 }
@@ -682,7 +678,7 @@ fn vs_wire(w: WireIn, @builtin(vertex_index) i: u32) -> WireOut {
 // Only what is tinted, which is drawn over the rest. A point for the others.
 @vertex
 fn vs_wire_tinted(w: WireIn, @builtin(vertex_index) i: u32) -> WireOut {
-    if owners[w.owner - 1u].tint.w < 0.5 {
+    if owner_at(w.owner - 1u).tint.w < 0.5 {
         var o: WireOut;
         o.clip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         return o;

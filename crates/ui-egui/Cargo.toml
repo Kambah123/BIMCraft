@@ -34,6 +34,7 @@ sys-locale = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+# console and Location: where the 3D view says whether it is on the card (and, with `?perf3d`, how long it takes).
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window",
@@ -55,6 +56,7 @@ web-sys = { version = "0.3", features = [
     "DomStringList",
     "Event",
     "EventTarget",
+    "Location",
     "console",
 ] }
 
@@ -63,6 +65,8 @@ web-sys = { version = "0.3", features = [
 hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
 
 [dev-dependencies]
+# Parses and validates the 3D view's shaders, both ways (`gpu.rs`), with the naga wgpu builds anyway.
+naga = { version = "30", features = ["wgsl-in"] }
 tempfile = { workspace = true }
 egui_kittest = { workspace = true }
 bimcraft-update = { workspace = true, features = ["testing"] }

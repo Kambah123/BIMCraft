@@ -48,6 +48,7 @@ web-sys = { version = "0.3", features = [
     "File",
     "FileList",
     "Window",
+    "Location",
     "console",
 ] }
 # eframe's wasm wgpu dep is `std` only; this turns on the WebGL2 backend so a browser

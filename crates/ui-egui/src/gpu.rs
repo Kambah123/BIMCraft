@@ -18,6 +18,8 @@ use egui::TextureId;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The plane a pixel shows and its element.
 const IDS: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
+/// The same and the opaque depth's bits, on a card whose shaders can't read a depth texture (WebGL2: `gpu_webgl.wgsl`).
+const IDS_WEBGL: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 /// The element seen through at a pixel.
 const CLEAR_IDS: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -53,6 +55,46 @@ pub struct Card {
     /// Making the 2D pipeline failed (wgpu panics on some downlevel limits); the canvas stays on the processor.
     canvas_failed: bool,
 }
+
+/// Says how the 3D view is drawn in the browser's console; nothing on the desktop, which has its status bar and settings.
+pub(crate) fn say(text: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&format!("bimcraft: {text}").into());
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = text;
+}
+
+/// How long the 3D view's pictures take, in the browser's console every 30 of them, where the page's address asks for it
+/// (`?perf3d`): on the card or on the processor, as that picture was.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn timed(on_card: bool, ms: f64) {
+    use std::cell::RefCell;
+    thread_local!(static TIMES: RefCell<(Option<bool>, Vec<f64>, bool)> = const { RefCell::new((None, Vec::new(), false)) });
+    TIMES.with_borrow_mut(|(asked, times, last)| {
+        let asked =
+            *asked.get_or_insert_with(|| web_sys::window().and_then(|w| w.location().search().ok()).is_some_and(|q| q.contains("perf3d")));
+        if !asked {
+            return;
+        }
+        if *last != on_card {
+            times.clear();
+            *last = on_card;
+        }
+        times.push(ms);
+        if times.len() >= 30 {
+            let mut sorted = times.clone();
+            sorted.sort_by(f64::total_cmp);
+            let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+            let median = sorted[sorted.len() / 2];
+            let path = if on_card { "card" } else { "processor" };
+            say(&format!("3D picture on the {path}: mean {mean:.1} ms, median {median:.1} ms over {} pictures", sorted.len()));
+            times.clear();
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn timed(_on_card: bool, _ms: f64) {}
 
 /// Wanted from the start: a window with a card draws on it unless the user says otherwise.
 impl Default for Card {
@@ -106,8 +148,19 @@ impl Card {
             && let Some(state) = &self.state
         {
             match Gpu::new(state) {
-                Ok(gpu) => self.gpu = Some(gpu),
-                Err(e) => (self.failed, self.note) = (true, Some(format!("the card failed: {e}"))),
+                Ok(gpu) => {
+                    say(&format!(
+                        "3D view on the graphics card: {} ({:?}, {})",
+                        gpu.adapter(),
+                        state.adapter.get_info().backend,
+                        gpu.path()
+                    ));
+                    self.gpu = Some(gpu);
+                }
+                Err(e) => {
+                    say(&format!("3D view on the processor: the card failed: {e}"));
+                    (self.failed, self.note) = (true, Some(format!("the card failed: {e}")));
+                }
             }
         }
         self.gpu.as_mut().filter(|_| self.wanted)
@@ -164,10 +217,10 @@ struct Uploaded {
     stand_ins: Option<(wgpu::Buffer, u64)>,
     /// The camera and section box the surfaces in the targets are of, and how far they are drawn.
     progress: Option<(Camera, Cut, Stage)>,
-    planes: wgpu::Buffer,
-    owners: wgpu::Buffer,
-    skins: wgpu::Buffer,
-    texels: wgpu::Buffer,
+    planes: Table,
+    owners: Table,
+    skins: Table,
+    texels: Table,
     /// The tints the owners were written with (none yet), and the textures' lookups.
     tints: Option<Vec<(Id, Rgb)>>,
     lookups: Vec<[u32; 12]>,
@@ -178,6 +231,7 @@ struct Uploaded {
 struct UploadJob {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    layout: Layout,
     vertex_bytes: u64,
     room: Room,
     mesh: Arc<Mesh>,
@@ -190,7 +244,7 @@ struct UploadDone {
 
 fn build_upload(job: UploadJob, cancel: &crate::view_worker::Cancel) -> Option<UploadDone> {
     let guard = scopes(&job.device);
-    let uploaded = Gpu::make_uploaded(&job.device, &job.queue, job.vertex_bytes, job.room, &job.mesh, &|| cancel.cancelled());
+    let uploaded = Gpu::make_uploaded(&job.device, &job.queue, job.layout, job.vertex_bytes, job.room, &job.mesh, &|| cancel.cancelled());
     let caught = caught(guard);
     if cancel.cancelled() {
         return None;
@@ -452,6 +506,9 @@ pub struct Gpu {
     group0: wgpu::BindGroupLayout,
     group1: wgpu::BindGroupLayout,
     group2: wgpu::BindGroupLayout,
+    /// Storage buffers, or the tables as textures for WebGL2 (and the levels' lines a vertex buffer, and the opaque depth in
+    /// the id target).
+    layout: Layout,
     globals: wgpu::Buffer,
     segments: (wgpu::Buffer, u64),
     mesh: Option<Uploaded>,
@@ -478,7 +535,8 @@ pub struct Gpu {
 /// The most bytes a buffer of vertices holds, whatever the card allows: some drivers place a very large buffer badly.
 const VERTEX_BUFFER: u64 = 256 << 20;
 
-/// What a device is asked for to draw any model: the buffers as big as the adapter has them, the rest as `asked`. OpenGL isn't the card's.
+/// What a device is asked for to draw any model: the buffers as big as the adapter has them, the rest as `asked`. OpenGL is asked
+/// for no more than `asked`: the card draws there with no storage buffers (`gpu_webgl.wgsl`).
 pub fn limits_for(adapter: &wgpu::Adapter, asked: wgpu::Limits) -> wgpu::Limits {
     if adapter.get_info().backend == wgpu::Backend::Gl {
         return asked;
@@ -500,8 +558,98 @@ fn spans(per: u64, range: std::ops::Range<u64>) -> Vec<(usize, std::ops::Range<u
     out
 }
 
+/// The 3D view's shaders: `gpu.wgsl`, and what it reads from as `layout` says.
+fn shader_source(layout: Layout) -> String {
+    if layout.webgl {
+        format!("const ROW: u32 = {}u;\n{}\n{}", layout.row, include_str!("gpu.wgsl"), include_str!("gpu_webgl.wgsl"))
+    } else {
+        format!("{}\n{}", include_str!("gpu.wgsl"), include_str!("gpu_storage.wgsl"))
+    }
+}
+
 /// The bytes of a buffer, 32-bit words as the card's byte order has them.
 type Words = Vec<u8>;
+
+/// How the shaders read their tables: from storage buffers (`gpu_storage.wgsl`), or, on a card that has none (WebGL2), from
+/// textures of four 32-bit words a texel, `row` texels to a row and at most `rows` rows (`gpu_webgl.wgsl`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Layout {
+    webgl: bool,
+    row: u32,
+    rows: u32,
+}
+
+impl Layout {
+    const STORAGE: Layout = Layout { webgl: false, row: 0, rows: 0 };
+
+    /// A table of `bytes` for a card of `limits`: true where it can hold it.
+    fn holds(&self, limits: &wgpu::Limits, bytes: u64) -> bool {
+        if self.webgl {
+            bytes.div_ceil(16) <= u64::from(self.row) * u64::from(self.rows)
+        } else {
+            bytes <= limits.max_storage_buffer_binding_size
+        }
+    }
+}
+
+/// A table the shaders read by index (the owners, the skins, the texels and the copies' planes), as `Layout` says.
+enum Table {
+    Buffer(wgpu::Buffer),
+    Texture(wgpu::Texture, wgpu::TextureView),
+}
+
+impl Table {
+    /// Room for `bytes`, floats where `float` (which only a texture minds).
+    fn new(device: &wgpu::Device, layout: Layout, bytes: u64, float: bool) -> Table {
+        if !layout.webgl {
+            return Table::Buffer(Gpu::storage(device, bytes));
+        }
+        let texels = bytes.div_ceil(16).max(1);
+        let row = u64::from(layout.row.max(1));
+        let size = wgpu::Extent3d { width: texels.min(row) as u32, height: texels.div_ceil(row) as u32, depth_or_array_layers: 1 };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bimcraft-3d-table"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: if float { wgpu::TextureFormat::Rgba32Float } else { wgpu::TextureFormat::Rgba32Uint },
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Table::Texture(texture, view)
+    }
+
+    /// Writes `bytes` from its start: a texture whole, the rest of it zeros.
+    fn write(&self, queue: &wgpu::Queue, bytes: &[u8]) {
+        match self {
+            Table::Buffer(buffer) => {
+                if !bytes.is_empty() {
+                    queue.write_buffer(buffer, 0, bytes);
+                }
+            }
+            Table::Texture(texture, _) => {
+                let size = texture.size();
+                let mut data = bytes.to_vec();
+                data.resize(size.width as usize * size.height as usize * 16, 0);
+                queue.write_texture(
+                    texture.as_image_copy(),
+                    &data,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 16), rows_per_image: Some(size.height) },
+                    size,
+                );
+            }
+        }
+    }
+
+    fn resource(&self) -> wgpu::BindingResource<'_> {
+        match self {
+            Table::Buffer(buffer) => buffer.as_entire_binding(),
+            Table::Texture(_, view) => wgpu::BindingResource::TextureView(view),
+        }
+    }
+}
 
 /// The most triangles a frame draws: past it, while the view moves, the nearest of what it sees and a box for each of the
 /// rest, and once it stays, the exact picture over as many frames as it takes. About 12 ms of an RTX 2060.
@@ -750,31 +898,37 @@ fn scopes(device: &wgpu::Device) -> [wgpu::ErrorScopeGuard; 2] {
 }
 
 impl Gpu {
-    /// The card egui draws on, if it can draw this view: it needs storage buffers in its shaders, which a few older ones lack.
+    /// The card egui draws on, if it can draw this view. On OpenGL (WebGL2 in a browser with no WebGPU), which can't read a
+    /// depth texture or storage buffers in its shaders, it draws with `gpu_webgl.wgsl`'s tables in textures instead.
     pub fn new(state: &RenderState) -> Result<Gpu, String> {
-        // OpenGL can't read what the shaders need (a depth texture, buffers in a vertex shader), and when it can't wgpu panics in
-        // the shader compiler rather than saying so: the card is for the backends that can.
-        if state.adapter.get_info().backend == wgpu::Backend::Gl {
-            return Err("needs Vulkan, Metal or DirectX 12, and the window is on OpenGL".into());
-        }
+        let webgl = state.adapter.get_info().backend == wgpu::Backend::Gl;
         // Whatever else a driver's compiler stops at, it is a reason, not a crash.
-        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Gpu::from_device(state.device.clone(), state.queue.clone())));
+        let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Gpu::from_device_for(state.device.clone(), state.queue.clone(), webgl)
+        }));
         let mut gpu = made.unwrap_or_else(|_| Err("stopped the shader compiler".into()))?;
         gpu.adapter = state.adapter.get_info().name;
         gpu.state = Some(state.clone());
         Ok(gpu)
     }
 
-    /// A card with no window to show it in: a picture is read back, not shown.
-    pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Result<Gpu, String> {
+    /// A card with no window to show it in (a picture is read back, not shown), its tables in storage buffers, or in textures
+    /// where `webgl`.
+    pub fn from_device_for(device: wgpu::Device, queue: wgpu::Queue, webgl: bool) -> Result<Gpu, String> {
         let limits = device.limits();
-        if limits.max_storage_buffers_per_shader_stage < 3 || limits.max_color_attachment_bytes_per_sample < 20 {
+        let ids_format = if webgl { IDS_WEBGL } else { IDS };
+        let attachment_bytes = COLOR.target_pixel_byte_cost().unwrap_or(8) + ids_format.target_pixel_byte_cost().unwrap_or(16);
+        if (!webgl && limits.max_storage_buffers_per_shader_stage < 3) || limits.max_color_attachment_bytes_per_sample < attachment_bytes {
             return Err("it can't read buffers in its shaders".into());
         }
+        // A table's rows as wide as the card's textures go (at most 4096 texels).
+        let side = limits.max_texture_dimension_2d.max(1);
+        let tables = if webgl { Layout { webgl, row: side.min(4096), rows: side } } else { Layout::STORAGE };
+        let source = shader_source(tables);
         let guard = scopes(&device);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bimcraft-3d"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let buffer = |ty: wgpu::BufferBindingType, binding: u32, visibility| wgpu::BindGroupLayoutEntry {
             binding,
@@ -784,27 +938,39 @@ impl Gpu {
         };
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let (vertex, fragment) = (wgpu::ShaderStages::VERTEX, wgpu::ShaderStages::FRAGMENT);
-        let group0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bimcraft-3d-buffers"),
-            entries: &[
-                buffer(wgpu::BufferBindingType::Uniform, 0, vertex | fragment),
-                buffer(storage, 1, vertex | fragment),
-                buffer(storage, 2, vertex),
-                buffer(storage, 3, fragment),
-                buffer(storage, 4, fragment),
-                buffer(storage, 5, vertex),
-            ],
-        });
-        let texture = |binding: u32, sample_type| wgpu::BindGroupLayoutEntry {
+        let texture_in = |binding: u32, sample_type, visibility| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: fragment,
+            visibility,
             ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
+        let texture = |binding: u32, sample_type| texture_in(binding, sample_type, fragment);
         let (float, uint) = (wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureSampleType::Uint);
+        let uniform = buffer(wgpu::BufferBindingType::Uniform, 0, vertex | fragment);
+        let group0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bimcraft-3d-buffers"),
+            entries: &if webgl {
+                // The levels' lines (2) are a vertex buffer.
+                vec![uniform, texture_in(1, float, vertex | fragment), texture(3, uint), texture(4, uint), texture_in(5, uint, vertex)]
+            } else {
+                vec![
+                    uniform,
+                    buffer(storage, 1, vertex | fragment),
+                    buffer(storage, 2, vertex),
+                    buffer(storage, 3, fragment),
+                    buffer(storage, 4, fragment),
+                    buffer(storage, 5, vertex),
+                ]
+            },
+        });
+        // The opaque depth is the id target's on WebGL2.
         let group1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bimcraft-3d-targets"),
-            entries: &[texture(0, float), texture(1, uint), texture(2, wgpu::TextureSampleType::Depth)],
+            entries: &if webgl {
+                vec![texture(0, float), texture(1, uint)]
+            } else {
+                vec![texture(0, float), texture(1, uint), texture(2, wgpu::TextureSampleType::Depth)]
+            },
         });
         let group2 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bimcraft-3d-clear-targets"),
@@ -866,7 +1032,7 @@ impl Gpu {
             "vs_instanced",
             "fs_scene",
             &[Some(vertex_layout.clone()), Some(instance_layout.clone())],
-            &[target(COLOR), target(IDS)],
+            &[target(COLOR), target(ids_format)],
             true,
         );
         let instanced_cut = pipeline(
@@ -875,7 +1041,7 @@ impl Gpu {
             "vs_instanced",
             "fs_scene_cut",
             &[Some(vertex_layout.clone()), Some(instance_layout.clone())],
-            &[target(COLOR), target(IDS)],
+            &[target(COLOR), target(ids_format)],
             true,
         );
         let scene_cut = pipeline(
@@ -884,7 +1050,7 @@ impl Gpu {
             "vs_scene",
             "fs_scene_cut",
             &[Some(vertex_layout.clone())],
-            &[target(COLOR), target(IDS)],
+            &[target(COLOR), target(ids_format)],
             true,
         );
         let instanced_clear = pipeline(
@@ -902,7 +1068,7 @@ impl Gpu {
             "vs_scene",
             "fs_scene",
             &[Some(vertex_layout.clone())],
-            &[target(COLOR), target(IDS)],
+            &[target(COLOR), target(ids_format)],
             true,
         );
         let clear = pipeline(
@@ -915,7 +1081,11 @@ impl Gpu {
             true,
         );
         let post = pipeline("bimcraft-3d-post", &picture_layout, "vs_full", "fs_post", &[], &[target(COLOR)], false);
-        let lines = pipeline("bimcraft-3d-lines", &targets_layout, "vs_line", "fs_line", &[], &[target(COLOR)], false);
+        let segment_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+        let segment_layout =
+            wgpu::VertexBufferLayout { array_stride: SEGMENT, step_mode: wgpu::VertexStepMode::Instance, attributes: &segment_attributes };
+        let segment_buffers = if webgl { vec![Some(segment_layout)] } else { Vec::new() };
+        let lines = pipeline("bimcraft-3d-lines", &targets_layout, "vs_line", "fs_line", &segment_buffers, &[target(COLOR)], false);
         let wire_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Uint32];
         let wire_layout =
             wgpu::VertexBufferLayout { array_stride: WIRE, step_mode: wgpu::VertexStepMode::Instance, attributes: &wire_attributes };
@@ -933,15 +1103,22 @@ impl Gpu {
         let dot_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32, 2 => Uint32];
         let dot_layout =
             wgpu::VertexBufferLayout { array_stride: DOT, step_mode: wgpu::VertexStepMode::Instance, attributes: &dot_attributes };
-        let dots =
-            pipeline("bimcraft-3d-dots", &surface_layout, "vs_dot", "fs_dot", &[Some(dot_layout)], &[target(COLOR), target(IDS)], true);
+        let dots = pipeline(
+            "bimcraft-3d-dots",
+            &surface_layout,
+            "vs_dot",
+            "fs_dot",
+            &[Some(dot_layout)],
+            &[target(COLOR), target(ids_format)],
+            true,
+        );
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bimcraft-3d-globals"),
             size: GLOBALS,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let segments = (Gpu::storage(&device, SEGMENT), SEGMENT);
+        let segments = (Gpu::segment_buffer(&device, tables, SEGMENT), SEGMENT);
         caught(guard)?;
         Ok(Gpu {
             device,
@@ -961,6 +1138,7 @@ impl Gpu {
             group0,
             group1,
             group2,
+            layout: tables,
             globals,
             segments,
             mesh: None,
@@ -981,6 +1159,24 @@ impl Gpu {
     /// The card's name, as the driver gives it.
     pub fn adapter(&self) -> &str {
         &self.adapter
+    }
+
+    /// How its shaders read the model: storage buffers, or (WebGL2) textures.
+    pub fn path(&self) -> &'static str {
+        if self.layout.webgl { "WebGL2 (tables in textures)" } else { "storage buffers" }
+    }
+
+    /// The levels' lines: a storage buffer, or on WebGL2 an instance vertex buffer.
+    fn segment_buffer(device: &wgpu::Device, layout: Layout, size: u64) -> wgpu::Buffer {
+        if !layout.webgl {
+            return Gpu::storage(device, size);
+        }
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bimcraft-3d-segments"),
+            size: size.max(SEGMENT),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     fn storage(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -1071,6 +1267,7 @@ impl Gpu {
             let job = UploadJob {
                 device: self.device.clone(),
                 queue: self.queue.clone(),
+                layout: self.layout,
                 vertex_bytes: self.vertex_bytes,
                 room: Room { bytes: self.card_bytes, full_at: self.full_at },
                 mesh: Arc::clone(mesh),
@@ -1148,7 +1345,7 @@ impl Gpu {
                 let shows = 1.0 - f32::from(o.transparency) / 100.0;
                 put(&mut owners, &[e[0], e[1], e[2], shows, c[0], c[1], c[2], if t.is_some() { 1.0 } else { 0.0 }]);
             }
-            write(&up.owners, &owners);
+            up.owners.write(queue, &owners);
             up.tints = Some(tints.to_vec());
         }
         // Each skin as the zoom looks it up: written again only when a level changes.
@@ -1158,7 +1355,7 @@ impl Gpu {
             for words in &lookups {
                 put_words(&mut skins, words);
             }
-            write(&up.skins, &skins);
+            up.skins.write(queue, &skins);
             up.lookups = lookups;
         }
         // Each mark's lines, from the mesh's origin so that f32 holds them.
@@ -1174,7 +1371,7 @@ impl Gpu {
             }
         }
         if lines.len() as u64 > self.segments.1 {
-            self.segments = (Gpu::storage(device, lines.len() as u64), lines.len() as u64);
+            self.segments = (Gpu::segment_buffer(device, self.layout, lines.len() as u64), lines.len() as u64);
             up.bind = None;
         }
         write(&self.segments.0, &lines);
@@ -1280,20 +1477,22 @@ impl Gpu {
         // The picture is made again when the surfaces are whole, exact or standing in; while the exact ones are on their way it
         // stays what the camera last showed.
         let picture = complete || frame == Frame::Moving;
+        let webgl = self.layout.webgl;
         let bind = up
             .bind
             .get_or_insert_with(|| {
+                fn table(binding: u32, t: &Table) -> wgpu::BindGroupEntry<'_> {
+                    wgpu::BindGroupEntry { binding, resource: t.resource() }
+                }
+                let mut entries = vec![entry(0, &self.globals), table(1, &up.owners)];
+                if !webgl {
+                    entries.push(entry(2, &self.segments.0));
+                }
+                entries.extend([table(3, &up.skins), table(4, &up.texels), table(5, &up.planes)]);
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("bimcraft-3d-buffers"),
                     layout: &self.group0,
-                    entries: &[
-                        entry(0, &self.globals),
-                        entry(1, &up.owners),
-                        entry(2, &self.segments.0),
-                        entry(3, &up.skins),
-                        entry(4, &up.texels),
-                        entry(5, &up.planes),
-                    ],
+                    entries: &entries,
                 })
             })
             .clone();
@@ -1511,6 +1710,8 @@ impl Gpu {
             pass.set_bind_group(1, &targets.bind, &[]);
             if name == "edges" {
                 pass.set_bind_group(2, &targets.clear_bind, &[]);
+            } else if webgl {
+                pass.set_vertex_buffer(0, self.segments.0.slice(..));
             }
             // The edges are one triangle over the whole picture; the levels' lines two to a segment.
             pass.draw(0..if name == "edges" { 3 } else { 6 }, 0..instances);
@@ -1553,22 +1754,25 @@ impl Gpu {
         }
         self.mesh = None;
         let room = Room { bytes: self.card_bytes, full_at: self.full_at };
-        self.mesh = Some(Self::make_uploaded(&self.device, &self.queue, self.vertex_bytes, room, mesh, &|| false)?);
+        self.mesh = Some(Self::make_uploaded(&self.device, &self.queue, self.layout, self.vertex_bytes, room, mesh, &|| false)?);
         Ok(())
     }
 
     fn make_uploaded(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        layout: Layout,
         vertex_bytes: u64,
         room: Room,
         mesh: &Arc<Mesh>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Uploaded, String> {
-        let binding = device.limits().max_storage_buffer_binding_size;
-        if mesh.texels.len() as u64 * 4 > binding
-            || mesh.owners.len() as u64 * OWNER > binding
-            || mesh.instance_planes.len() as u64 * 4 > binding
+        let limits = device.limits();
+        let holds = |bytes: u64| layout.holds(&limits, bytes);
+        if !holds(mesh.texels.len() as u64 * 4)
+            || !holds(mesh.owners.len() as u64 * OWNER)
+            || !holds(mesh.instance_planes.len() as u64 * 4)
+            || !holds(mesh.skins.len() as u64 * SKIN)
         {
             return Err("the model is bigger than the card holds".into());
         }
@@ -1654,17 +1858,17 @@ impl Gpu {
             instances.push(vertex_buffer("bimcraft-3d-instances", &bytes));
             queue.submit([]);
         }
-        let planes = Gpu::storage(device, mesh.instance_planes.len() as u64 * 4);
+        let planes = Table::new(device, layout, mesh.instance_planes.len() as u64 * 4, false);
         if !mesh.instance_planes.is_empty() {
             let mut words = Words::with_capacity(mesh.instance_planes.len() * 4);
             put_words(&mut words, &mesh.instance_planes);
-            queue.write_buffer(&planes, 0, &words);
+            planes.write(queue, &words);
         }
-        let texels = Gpu::storage(device, mesh.texels.len() as u64 * 4);
+        let texels = Table::new(device, layout, mesh.texels.len() as u64 * 4, false);
         let mut words = Words::with_capacity(mesh.texels.len() * 4);
         put_words(&mut words, &mesh.texels);
         if !words.is_empty() {
-            queue.write_buffer(&texels, 0, &words);
+            texels.write(queue, &words);
         }
         Ok(Uploaded {
             mesh: Arc::clone(mesh),
@@ -1689,8 +1893,8 @@ impl Gpu {
             lookups: Vec::new(),
             bind: None,
             // An array in a shader is at least one element long.
-            owners: Gpu::storage(device, mesh.owners.len().max(1) as u64 * OWNER),
-            skins: Gpu::storage(device, mesh.skins.len().max(1) as u64 * SKIN),
+            owners: Table::new(device, layout, mesh.owners.len().max(1) as u64 * OWNER, true),
+            skins: Table::new(device, layout, mesh.skins.len().max(1) as u64 * SKIN, false),
             texels,
         })
     }
@@ -1720,10 +1924,12 @@ impl Gpu {
         let (render, sampled) = (wgpu::TextureUsages::RENDER_ATTACHMENT, wgpu::TextureUsages::TEXTURE_BINDING);
         let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let color_texture = texture("bimcraft-3d-color", COLOR, render | sampled | wgpu::TextureUsages::COPY_SRC);
+        // On WebGL2 the depth is read from the id target, and the depth target only tested and written.
+        let (ids_format, depth_usage) = if self.layout.webgl { (IDS_WEBGL, render) } else { (IDS, render | sampled) };
         let (color, ids, depth) = (
             view(&color_texture),
-            view(&texture("bimcraft-3d-ids", IDS, render | sampled)),
-            view(&texture("bimcraft-3d-depth", DEPTH, render | sampled)),
+            view(&texture("bimcraft-3d-ids", ids_format, render | sampled)),
+            view(&texture("bimcraft-3d-depth", DEPTH, depth_usage)),
         );
         let (clear_color, clear_ids, clear_depth) = (
             view(&texture("bimcraft-3d-clear-color", COLOR, render | sampled)),
@@ -1740,7 +1946,7 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ids) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&depth) },
-            ],
+            ][..if self.layout.webgl { 2 } else { 3 }],
         });
         let clear_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bimcraft-3d-clear-targets"),
@@ -1821,18 +2027,19 @@ pub(crate) fn headless() -> Option<Gpu> {
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    // OpenGL is not the card's (see `Gpu::new`).
-    if adapter.get_info().backend == wgpu::Backend::Gl {
-        return None;
-    }
+    // On OpenGL, the limits a browser's WebGL2 gives (and textures as large as egui asks for), so that the tables-in-textures
+    // path is tested here as it runs there; BIMCRAFT_GPU_WEBGL=1 draws that way on any card.
+    let gl = adapter.get_info().backend == wgpu::Backend::Gl;
+    let webgl = gl || std::env::var_os("BIMCRAFT_GPU_WEBGL").is_some_and(|v| v == "1");
     alone_on(adapter.get_info().device_type);
+    let asked = if gl {
+        wgpu::Limits { max_texture_dimension_2d: 8192, ..wgpu::Limits::downlevel_webgl2_defaults() }
+    } else {
+        limits_for(&adapter, wgpu::Limits::default())
+    };
     let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: limits_for(&adapter, wgpu::Limits::default()),
-            ..Default::default()
-        }))
-        .ok()?;
-    match Gpu::from_device(device, queue) {
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits: asked, ..Default::default() })).ok()?;
+    match Gpu::from_device_for(device, queue, webgl) {
         Ok(gpu) => Some(gpu),
         // A software adapter may lack what the card needs; a real one that can't draw is a bug to hear about.
         Err(_) if adapter.get_info().device_type == wgpu::DeviceType::Cpu => None,
@@ -1886,14 +2093,32 @@ mod tests {
     /// no pipeline, so a window on it has no card at all. Vulkan and Metal take it, so a card here never finds this one out.
     #[test]
     fn no_shader_function_ends_in_a_discard_which_directx_refuses() {
-        let lines: Vec<&str> = include_str!("gpu.wgsl").lines().collect();
-        let ends: Vec<usize> = lines
-            .windows(2)
-            .enumerate()
-            .filter(|(_, pair)| pair[0].trim() == "discard;" && pair[1] == "}")
-            .map(|(line, _)| line + 1)
-            .collect();
-        assert!(ends.is_empty(), "gpu.wgsl: a function ends in a discard at line {ends:?}");
+        for (name, source) in [
+            ("gpu.wgsl", include_str!("gpu.wgsl")),
+            ("gpu_storage.wgsl", include_str!("gpu_storage.wgsl")),
+            ("gpu_webgl.wgsl", include_str!("gpu_webgl.wgsl")),
+        ] {
+            let lines: Vec<&str> = source.lines().collect();
+            let ends: Vec<usize> = lines
+                .windows(2)
+                .enumerate()
+                .filter(|(_, pair)| pair[0].trim() == "discard;" && pair[1] == "}")
+                .map(|(line, _)| line + 1)
+                .collect();
+            assert!(ends.is_empty(), "{name}: a function ends in a discard at line {ends:?}");
+        }
+    }
+
+    /// Both ways of reading the tables make a valid module, whatever card the tests here have: storage buffers (the
+    /// desktop and WebGPU) and textures (WebGL2).
+    #[test]
+    fn the_shaders_are_valid_with_their_tables_in_storage_buffers_and_in_textures() {
+        for layout in [Layout::STORAGE, Layout { webgl: true, row: 4096, rows: 8192 }] {
+            let module = naga::front::wgsl::parse_str(&shader_source(layout)).unwrap_or_else(|e| panic!("{layout:?}: {e}"));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{layout:?}: {e:?}"));
+        }
     }
 
     /// The picture's pixels as rows of red, green, blue and alpha.

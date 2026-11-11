@@ -576,6 +576,7 @@ dependencies = [
  "egui_kittest",
  "hidapi",
  "js-sys",
+ "naga",
  "pollster 1.0.1",
  "rayon",
  "rfd",

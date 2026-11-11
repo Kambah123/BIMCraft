@@ -361,6 +361,11 @@ impl BimApp {
         self.card.state = Some(state.clone());
     }
 
+    /// Draws the 3D view on the processor, though there is a card (as Settings > Performance can): the browser's `?3d=cpu`.
+    pub fn draw_3d_on_the_processor(&mut self) {
+        self.card.wanted = false;
+    }
+
     fn settings_now(&self, theme: ThemePreference) -> Settings {
         Settings {
             theme,
