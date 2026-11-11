@@ -36,8 +36,10 @@ vertex buffer, and the opaque depth is written into the id target as well as tes
 target. WebGPU and the desktop read the same tables from storage buffers (`gpu_storage.wgsl`); both
 share `gpu.wgsl`. The tests in `gpu.rs` that compare the card's picture with the processor's pass on
 OpenGL (Mesa llvmpipe) with WebGL2's limits. The browser console says which way the 3D view is drawn
-(`bimcraft: 3D view on the graphics card: … (Gl, WebGL2 (tables in textures))`). Add `?3d=cpu` to the
-address to keep it on the processor, and `?perf3d` to log how long its pictures take.
+(`bimcraft: 3D view on the graphics card: … (Gl, WebGL2 (tables in textures))`). **The web build draws
+3D on the processor by default**, because the card's path froze Chrome on macOS (WebGL2 through
+ANGLE/Metal). Add `?3d=gpu` to the address to opt in to the card, and `?perf3d` to log how long its
+pictures take.
 
 Background view jobs (the 3D scene, sections, plans, the upload to the card) run on the window's
 thread in the browser, as there are no threads to start there.

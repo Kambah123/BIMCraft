@@ -67,8 +67,10 @@ fn app(cc: &eframe::CreationContext<'_>) -> BimApp {
     if let Some(state) = cc.wgpu_render_state.as_ref() {
         app.use_graphics_card(state);
     }
-    // `?3d=cpu` keeps the 3D view on the processor, to compare it with the card.
-    if web_sys::window().and_then(|w| w.location().search().ok()).is_some_and(|q| q.contains("3d=cpu")) {
+    // The 3D view is drawn on the processor by default: on some real GPUs (Chrome on macOS, WebGL2 through ANGLE/Metal)
+    // the card's path froze the tab. `?3d=gpu` opts in to the card, to test it; `?3d=cpu` is still understood.
+    let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    if !query.contains("3d=gpu") {
         app.draw_3d_on_the_processor();
     }
     app
