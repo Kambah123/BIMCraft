@@ -151,12 +151,15 @@
       // with a way to try again. web.rs calls campusbimFail when the graphics can't start.
       (function () {
         var started = Date.now();
+        var final_shown = false;
         function box() {
           return document.getElementById("campusbim-problem");
         }
         function show(title, detail, final) {
           var b = box();
-          if (!b || window.__bimcraftReady) return;
+          // An error stays up: the "still loading" note doesn't replace it.
+          if (!b || window.__bimcraftReady || (final_shown && !final)) return;
+          if (final) final_shown = true;
           var safe = location.search.indexOf("gfx=gl") >= 0;
           b.innerHTML = "";
           var t = document.createElement("div");
