@@ -1058,6 +1058,7 @@ impl BimApp {
         {
             // The card's picture, if it makes one; the processor's if not, and if the card fails it for good.
             let (mut drawn, mut exact) = (false, true);
+            let began = bimcraft_core::time::Instant::now();
             if let (Some(mesh), Some(gpu)) = (&mesh, self.card.gpu.as_mut()) {
                 gpu.swapped_ink = crate::style::canvas_dark();
                 // The model's box, whichever the mesh was made under.
@@ -1077,6 +1078,9 @@ impl BimApp {
                 }
             }
             o.on_card = drawn;
+            if drawn {
+                crate::gpu::timed(true, began.elapsed().as_secs_f64() * 1000.0);
+            }
             if !drawn {
                 // As the default 3D view says: what it hides, and the colours it draws in.
                 let look = Look::of_3d(&model);
@@ -1101,6 +1105,7 @@ impl BimApp {
                     None => o.texture = Some(ui.ctx().load_texture("view3d", pixels, TextureOptions::NEAREST)),
                 }
                 o.picker = Some(Picker::Image(image));
+                crate::gpu::timed(false, began.elapsed().as_secs_f64() * 1000.0);
             }
             // A picture that stands in, or whose exact surfaces are on their way, is drawn again next frame until it is exact.
             o.shown = exact.then(|| (Arc::clone(&model), cam, tints, dark, drawn, reboxed));

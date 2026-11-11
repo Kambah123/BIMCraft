@@ -28,11 +28,19 @@ one `bimcraft --sample` builds); there is no command line in the browser. Orbiti
 zooming the 3D view, drawing in plan, and running commands from the ribbon all go through the
 same session as on the desktop, in memory.
 
-The 3D view is drawn on the graphics card when WebGPU is available, as on the desktop. On
-WebGL2, that path is not used: the shaders need storage buffers and a depth texture, which the
-OpenGL backend cannot give them (`Gpu::new` already refuses `Backend::Gl` and the picture is
-drawn on the processor instead). The 2D canvas's retained triangles can still be drawn through
-wgpu on WebGL once their uniform is a multiple of 16 bytes.
+The 3D view is drawn on the graphics card on WebGPU and on WebGL2 alike. WebGL2 has no storage
+buffers and its shaders can't read a depth texture, so there the card draws with
+`crates/ui-egui/src/gpu_webgl.wgsl`: the elements' colours, the textures' lookups and texels and the
+copies' plane numbers are 2D textures of four 32-bit words a texel, the levels' lines are an instance
+vertex buffer, and the opaque depth is written into the id target as well as tested in the depth
+target. WebGPU and the desktop read the same tables from storage buffers (`gpu_storage.wgsl`); both
+share `gpu.wgsl`. The tests in `gpu.rs` that compare the card's picture with the processor's pass on
+OpenGL (Mesa llvmpipe) with WebGL2's limits. The browser console says which way the 3D view is drawn
+(`bimcraft: 3D view on the graphics card: … (Gl, WebGL2 (tables in textures))`). Add `?3d=cpu` to the
+address to keep it on the processor, and `?perf3d` to log how long its pictures take.
+
+Background view jobs (the 3D scene, sections, plans, the upload to the card) run on the window's
+thread in the browser, as there are no threads to start there.
 
 `std::time::SystemTime::now` / `Instant::now` and `std::process::id` panic on
 `wasm32-unknown-unknown` ("time not implemented", "no pids on this platform"). Fresh ids and the
@@ -81,8 +89,8 @@ message; nothing fails silently or panics:
   behind the `native-services` feature, which the wasm build turns off. rustls does not compile
   for `wasm32-unknown-unknown` as used here.
 - **The agent port.** The TCP control port (`--control`) assumes a localhost listener.
-- **Background work.** Section and 3D workers, Revit import on a thread, and rayon's render pool
-  type-check, but `std::thread` does not do useful work in this wasm target.
+- **Background work.** View jobs run on the window's thread (a large model pauses the page while its
+  3D scene is built); Revit import on a thread and rayon's render pool do not get threads here.
 - **Size.** A release `trunk build` of this tree is 38,601,800 bytes (38.6 MB) of Wasm without
   wasm-opt, and 28,035,288 bytes (28.0 MB) after `wasm-opt -z`. The file I/O, download and
   recovery code accounts for most of the growth from the previous WebGL-fallback tree.
