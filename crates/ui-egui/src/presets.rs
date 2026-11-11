@@ -154,6 +154,9 @@ impl BimApp {
     pub(crate) fn scale_chip(&mut self, ui: &mut Ui) {
         let chip =
             Button::new(RichText::new(t(self.scale.name())).color(pal().app_bar_text)).fill(pal().app_bar_hover).min_size(vec2(64.0, 24.0));
+        // On CampusBIM's dark bar, in both themes, the chip's edge is the bar's own line, never the light theme's card border.
+        let chip =
+            if crate::style::campus() { chip.stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x22, 0x32, 0x2a))) } else { chip };
         MenuButton::from_button(chip).ui(ui, |ui| {
             ui.label(RichText::new(t("Project scale")).strong());
             for s in Scale::ALL {

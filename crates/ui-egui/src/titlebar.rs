@@ -71,8 +71,41 @@ pub(crate) fn drag_area(ui: &Ui, rect: Rect) {
 /// Where the caption buttons are this frame, for the window's edges to leave them their presses.
 const CAPTIONS_AT: &str = "caption-buttons";
 
-/// Minimize, Maximize (Restore Down when maximized) and Close at the right end of `bar`, its full height.
+/// Where the open project is kept, as the title's chip says it (the browser's: the cloud, only this page, or changed since).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum Kept {
+    Cloud,
+    Unsaved,
+    Local,
+}
+
+/// The chip after the title: a dot and what `label` says, in flat fills that read on the dark bar (mint on deep green for the
+/// cloud, amber for changes not kept, the bar's dim lettering in an outline for a project only on this computer).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn paint_chip(ui: &Ui, rect: Rect, label: std::sync::Arc<egui::Galley>, kept: Kept) {
+    let (fill, edge, ink) = match kept {
+        Kept::Cloud => (Color32::from_rgb(0x1C, 0x46, 0x32), Color32::TRANSPARENT, Color32::from_rgb(0x8B, 0xE8, 0xB5)),
+        Kept::Unsaved => (Color32::from_rgb(0x3A, 0x2E, 0x12), Color32::TRANSPARENT, Color32::from_rgb(0xF5, 0xC8, 0x6B)),
+        Kept::Local => (Color32::TRANSPARENT, pal().app_bar_hover, pal().app_bar_muted),
+    };
+    let p = ui.painter();
+    p.rect(rect, 10.0, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
+    p.circle_filled(rect.left_center() + vec2(9.0, 0.0), 3.0, ink);
+    p.galley_with_override_text_color(pos2(rect.left() + 16.0, rect.center().y - label.size().y / 2.0), label, ink);
+}
+
+/// How wide the caption buttons are: none in the browser, whose own window has them.
+pub(crate) fn captions_width() -> f32 {
+    if cfg!(target_arch = "wasm32") { 0.0 } else { 3.0 * BUTTON_WIDTH }
+}
+
+/// Minimize, Maximize (Restore Down when maximized) and Close at the right end of `bar`, its full height. The browser draws none:
+/// its tab is the window.
 pub(crate) fn caption_buttons(ui: &mut Ui, bar: Rect) {
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     let ctx = ui.ctx().clone();
     let max = maximized(&ctx);
     let cluster = Rect::from_min_max(pos2(bar.right() - 3.0 * BUTTON_WIDTH, bar.top()), bar.right_bottom());
@@ -162,6 +195,10 @@ pub(crate) fn zones(w: Rect, edge: f32, captions: Option<Rect>) -> Vec<(Rect, Re
 /// The window's frame, over everything else: its edges and corners resize it, and a hairline marks its border, as the system's
 /// frame would. A maximized or full-screen window has neither.
 pub(crate) fn frame(ui: &mut Ui) {
+    // A page in the browser is neither moved nor resized by its edges.
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     let ctx = ui.ctx().clone();
     if maximized(&ctx) || ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
         return;

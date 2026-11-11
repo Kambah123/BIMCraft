@@ -39,7 +39,13 @@ pub(crate) fn button(ui: &mut egui::Ui) -> egui::Response {
     r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
     let p = ui.painter();
     let (ink, ground) = crate::style::icon_inks();
-    p.rect_filled(rect, 6.0, if r.hovered() { ground } else { pal().app_bar_hover.gamma_multiply(0.6) });
+    if crate::style::campus() {
+        // CampusBIM's search field on the bar: a field's dark fill and a hairline, as the component sheet draws it.
+        let fill = if r.hovered() { ground } else { egui::Color32::from_rgb(0x12, 0x1b, 0x16) };
+        p.rect(rect, 6.0, fill, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x22, 0x32, 0x2a)), egui::StrokeKind::Inside);
+    } else {
+        p.rect_filled(rect, 6.0, if r.hovered() { ground } else { pal().app_bar_hover.gamma_multiply(0.6) });
+    }
     if r.has_focus() {
         p.rect_stroke(rect, 6.0, crate::style::focus_ring(), egui::StrokeKind::Inside);
     }

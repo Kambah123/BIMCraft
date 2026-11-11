@@ -23,6 +23,8 @@ pub struct Palette {
     /// The accent where it must be read, as text or an icon or the ring round what has focus, on a card, a tint or a hovered
     /// row: `accent` is for fills, strokes and the drawing, and falls short of 4.5:1 on a tint.
     pub accent_ink: Color32,
+    /// Lettering and icons on a fill of `accent` (a primary button, a ticked box).
+    pub on_accent: Color32,
     /// Pre-selection: what a click would pick.
     pub hover: Color32,
     pub select_fill: Color32,
@@ -64,6 +66,7 @@ const fn rgb(c: u32) -> Color32 {
 pub const LIGHT: Palette = Palette {
     accent: rgb(0x2678DA),
     accent_ink: rgb(0x2064B5),
+    on_accent: Color32::WHITE,
     hover: rgb(0x5B9BE6),
     select_fill: rgb(0xD6E6FA),
     hover_fill: rgb(0xE2EAF6),
@@ -94,6 +97,7 @@ pub const CANVAS_LIGHT: Palette = Palette { hover: rgb(0x4A90E2), select_fill: r
 pub const DARK: Palette = Palette {
     accent: rgb(0x3A88EE),
     accent_ink: rgb(0x89B8F5),
+    on_accent: Color32::WHITE,
     hover: rgb(0x60A5FA),
     select_fill: rgb(0x2A466E),
     hover_fill: rgb(0x363D4A),
@@ -192,6 +196,63 @@ pub const AMOLED: Palette = Palette {
     ..DARK
 };
 
+/// CampusBIM Dark (the component sheet's `CAMPUS_DARK`): near-black green grounds, lime for what is on, with dark lettering on it,
+/// and mint where the accent is read as text or an icon.
+pub const CAMPUS_DARK: Palette = Palette {
+    accent: rgb(0xD8F36C),
+    accent_ink: rgb(0x8BE8B5),
+    on_accent: rgb(0x0A0F0C),
+    hover: rgb(0xB5E3A0),
+    select_fill: rgb(0x1C4632),
+    hover_fill: rgb(0x1A2820),
+    text: rgb(0xE6EEE9),
+    muted: rgb(0x9AADA2),
+    icon: rgb(0xC3D1C8),
+    panel: rgb(0x111915),
+    bar: rgb(0x16211B),
+    control: rgb(0x1E2B24),
+    border: rgb(0x25362D),
+    error: rgb(0xF87171),
+    context: rgb(0x8BE8B5),
+    context_fill: rgb(0x1C4632),
+    on_context: rgb(0x0A0F0C),
+    surface: rgb(0x0C1310),
+    desk: rgb(0x0B110E),
+    app_bar: rgb(0x0A0F0C),
+    app_bar_text: rgb(0xEEF3EF),
+    app_bar_muted: rgb(0x9DB0A5),
+    app_bar_hover: rgb(0x17231C),
+    shadow: Color32::from_rgba_premultiplied(0, 0, 0, 102),
+};
+
+/// CampusBIM Light (`CAMPUS_LIGHT`): white cards and paper, forest green for what is on, the top bar dark as in the dark theme.
+pub const CAMPUS_LIGHT: Palette = Palette {
+    accent: rgb(0x176B4A),
+    accent_ink: rgb(0x12583C),
+    on_accent: Color32::WHITE,
+    hover: rgb(0x3E8C68),
+    select_fill: rgb(0xD4EFE0),
+    hover_fill: rgb(0xEAF3EE),
+    text: rgb(0x15201A),
+    muted: rgb(0x536359),
+    icon: rgb(0x2C3A32),
+    panel: rgb(0xFFFFFF),
+    bar: rgb(0xF2F6F3),
+    control: rgb(0xE8EEEA),
+    border: rgb(0xD2DCD6),
+    error: rgb(0xCC2020),
+    context: rgb(0x176B4A),
+    context_fill: rgb(0xD4EFE0),
+    on_context: Color32::WHITE,
+    surface: rgb(0xFFFFFF),
+    desk: rgb(0xE7ECE9),
+    app_bar: rgb(0x0A0F0C),
+    app_bar_text: rgb(0xEEF3EF),
+    app_bar_muted: rgb(0x9DB0A5),
+    app_bar_hover: rgb(0x17231C),
+    shadow: Color32::from_rgba_premultiplied(1, 1, 1, 31),
+};
+
 /// The colours a user picks over the profile's own: one of the presets (dark ones), or the profile's light and dark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scheme {
@@ -200,10 +261,20 @@ pub enum Scheme {
     Dracula,
     Midnight,
     Amoled,
+    /// CampusBIM's own pair: dark in the dark theme, light in the light one. Picking either puts the window in its theme.
+    CampusDark,
+    CampusLight,
 }
 
 impl Scheme {
     pub const PRESETS: [Scheme; 3] = [Scheme::Dracula, Scheme::Midnight, Scheme::Amoled];
+    /// CampusBIM's two, listed before the dark presets.
+    pub const CAMPUS: [Scheme; 2] = [Scheme::CampusDark, Scheme::CampusLight];
+
+    /// Whether this is one of CampusBIM's pair.
+    pub fn campus(self) -> bool {
+        matches!(self, Scheme::CampusDark | Scheme::CampusLight)
+    }
 
     /// Its name, which is its label too: names, so never translated.
     pub fn name(self) -> &'static str {
@@ -212,6 +283,8 @@ impl Scheme {
             Scheme::Dracula => "Dracula",
             Scheme::Midnight => "Midnight",
             Scheme::Amoled => "AMOLED",
+            Scheme::CampusDark => "CampusBIM Dark",
+            Scheme::CampusLight => "CampusBIM Light",
         }
     }
 
@@ -222,11 +295,13 @@ impl Scheme {
             Scheme::Dracula => "dracula",
             Scheme::Midnight => "midnight",
             Scheme::Amoled => "amoled",
+            Scheme::CampusDark => "campus-dark",
+            Scheme::CampusLight => "campus-light",
         }
     }
 
     pub fn from_code(code: &str) -> Option<Scheme> {
-        [Scheme::Own].into_iter().chain(Scheme::PRESETS).find(|s| s.code() == code)
+        [Scheme::Own].into_iter().chain(Scheme::PRESETS).chain(Scheme::CAMPUS).find(|s| s.code() == code)
     }
 }
 
@@ -237,6 +312,8 @@ pub fn palette(dark: bool, look: Look) -> Palette {
         (true, Scheme::Dracula) => DRACULA,
         (true, Scheme::Midnight) => MIDNIGHT,
         (true, Scheme::Amoled) => AMOLED,
+        (true, Scheme::CampusDark | Scheme::CampusLight) => CAMPUS_DARK,
+        (false, Scheme::CampusDark | Scheme::CampusLight) => CAMPUS_LIGHT,
         (false, _) => LIGHT,
         (true, _) => DARK,
     };
@@ -262,7 +339,8 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 fn with_accent(p: Palette, accent: Color32) -> Palette {
     let select_fill = step(mix(p.panel, accent, 0.25), p.panel, &[p.text], 4.5);
     let grounds = [p.panel, p.bar, p.surface, p.hover_fill, select_fill, p.control];
-    Palette { accent, accent_ink: step(accent, p.text, &grounds, 4.5), hover: mix(accent, p.text, 0.3), select_fill, ..p }
+    let on_accent = ink_on(accent);
+    Palette { accent, accent_ink: step(accent, p.text, &grounds, 4.5), on_accent, hover: mix(accent, p.text, 0.3), select_fill, ..p }
 }
 
 /// `p` on the user's panel colour `ground`: the cards in it; their bands, buttons and hovered rows a step toward the ink that reads
@@ -340,6 +418,8 @@ thread_local! {
     static COMPACT: Cell<bool> = const { Cell::new(false) };
     /// Whether this frame wears the Rev profile.
     static REV: Cell<bool> = const { Cell::new(false) };
+    /// Whether this frame wears CampusBIM's colours: the dark canvas takes their green-black ground.
+    static CAMPUS: Cell<bool> = const { Cell::new(false) };
     /// The colours this frame is drawn in (`palette`), set by `follow`.
     static CURRENT: Cell<Palette> = const { Cell::new(LIGHT) };
     /// Whether what's drawn now is on the dark app bar, where icons are light.
@@ -398,8 +478,18 @@ pub(crate) fn set_canvas(dark: bool, ground: Option<Color32>) {
 /// The colours the drawing paints with where they must read on its own ground (the fills of what is selected or hovered, a crop
 /// region's outline): the dark palette on a dark canvas, [`CANVAS_LIGHT`] on a light canvas, whatever the interface around it is.
 pub fn canvas_pal() -> &'static Palette {
-    if canvas_dark() { &DARK } else { &CANVAS_LIGHT }
+    match (canvas_dark(), campus()) {
+        (true, true) => &CANVAS_CAMPUS_DARK,
+        (false, true) => &CANVAS_CAMPUS_LIGHT,
+        (true, false) => &DARK,
+        (false, false) => &CANVAS_LIGHT,
+    }
 }
+
+/// CampusBIM's drawing colours: lime for what is picked and mint for what a click would pick on the dark canvas; forest green and
+/// a lighter green on the white paper, with a deeper selection tint there so the two fills are told apart.
+pub const CANVAS_CAMPUS_DARK: Palette = Palette { hover: rgb(0x8BE8B5), ..CAMPUS_DARK };
+pub const CANVAS_CAMPUS_LIGHT: Palette = Palette { select_fill: rgb(0xB9E3CB), ..CAMPUS_LIGHT };
 
 /// Which interface the window wears: BIMCraft's own (the default), its tools a palette, or Rev, the ribbon tool its users know:
 /// the ribbon in place of the palette, Revit's palette layout and names. One look: the same cards, colours and Layout.
@@ -460,6 +550,7 @@ pub fn follow(ctx: &Context, look: Look) {
     GROUND.with(|g| g.set(ground));
     COMPACT.with(|c| c.set(look.compact));
     REV.with(|r| r.set(look.profile == Profile::Rev));
+    CAMPUS.with(|c| c.set(look.scheme.campus()));
     CURRENT.with(|c| c.set(palette(dark(), look)));
     // The widgets' look is the context's, set for both themes: again only when the look changes (the profile, the colours).
     let styled = egui::Id::new("styled-look");
@@ -474,6 +565,11 @@ pub fn follow(ctx: &Context, look: Look) {
 /// Whether this frame is laid out flush: the Compact layout.
 pub fn compact() -> bool {
     COMPACT.with(Cell::get)
+}
+
+/// Whether this frame wears CampusBIM's colours (CampusBIM Dark or Light).
+pub fn campus() -> bool {
+    CAMPUS.with(Cell::get)
 }
 
 /// Whether this frame wears the Rev profile.
@@ -604,7 +700,8 @@ fn visuals(ctx: &Context, look: Look) {
             v.popup_shadow = Shadow { offset: [0, 8], blur: 24, spread: 0, color: pal.shadow };
             v.hyperlink_color = pal.accent;
             v.selection.bg_fill = pal.select_fill;
-            v.selection.stroke = Stroke::new(1.0, pal.accent);
+            // CampusBIM letters what is picked (a selected row, a toggled label) in the text's colour on its deep tint.
+            v.selection.stroke = Stroke::new(1.0, if look.scheme.campus() { pal.text } else { pal.accent });
             v.text_cursor.stroke = Stroke::new(2.0, pal.accent);
             let radius = CornerRadius::same(4);
             for w in
@@ -650,10 +747,16 @@ mod tests {
         for s in Scheme::PRESETS {
             looks.push((s.name().into(), palette(true, Look { scheme: s, ..Look::default() }), true));
         }
+        for s in Scheme::CAMPUS {
+            for dark in [true, false] {
+                looks.push((format!("{} (dark {dark})", s.name()), palette(dark, Look { scheme: s, ..Look::default() }), dark));
+            }
+        }
         let look = |scheme: Scheme| Look { scheme, ..Look::default() };
         // An accent of every kind on every ground: a pale yellow, a dark navy, a mid grey, pure red.
         let bases = [(false, Scheme::Own), (true, Scheme::Own)];
-        let bases = bases.into_iter().chain(Scheme::PRESETS.map(|s| (true, s)));
+        let bases =
+            bases.into_iter().chain(Scheme::PRESETS.map(|s| (true, s))).chain([(true, Scheme::CampusDark), (false, Scheme::CampusLight)]);
         for accent in [[255, 255, 0], [0, 17, 51], [128, 128, 128], [255, 0, 0]] {
             for (dark, scheme) in bases.clone() {
                 let name = format!("{accent:?} over {scheme:?}, dark {dark}");
@@ -702,6 +805,11 @@ mod tests {
                 ("a caption button's focus ring and glyph", p.app_bar_text, p.app_bar_hover, 3.0),
                 ("Close's focus ring and glyph", Color32::WHITE, crate::titlebar::CLOSE_HOVER, 3.0),
             ]);
+            // CampusBIM's primary buttons letter the accent's fill (the older themes keep their white on it, as they always had).
+            if theme.contains("CampusBIM") {
+                rows.push(("lettering on the accent's fill", p.on_accent, p.accent, 4.5));
+                rows.push(("the active row's indicator", p.accent, p.panel, 3.0));
+            }
             for (what, ink, ground, least) in rows {
                 let c = contrast(ink, ground);
                 if c < least {
@@ -729,8 +837,10 @@ mod tests {
             (d(a.r(), b.r()) + d(a.g(), b.g()) + d(a.b(), b.b())).sqrt()
         };
         let mut fails = Vec::new();
-        for canvas in ["light", "dark"] {
+        for (canvas, campus) in [("light", false), ("dark", false), ("light", true), ("dark", true)] {
             CANVAS_DARK.with(|d| d.set(canvas == "dark"));
+            CAMPUS.with(|c| c.set(campus));
+            let canvas = if campus { format!("CampusBIM {canvas}") } else { canvas.to_string() };
             let p = canvas_pal();
             let paper = crate::canvas::color(bimcraft_core::render::PAPER);
             for (what, a, b) in [("fills", p.hover_fill, p.select_fill), ("strokes", p.hover, p.accent)] {
@@ -746,6 +856,7 @@ mod tests {
             }
         }
         CANVAS_DARK.with(|d| d.set(false));
+        CAMPUS.with(|c| c.set(false));
         assert!(fails.is_empty(), "{fails:#?}");
     }
 }

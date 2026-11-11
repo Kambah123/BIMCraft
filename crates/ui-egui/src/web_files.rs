@@ -181,7 +181,10 @@ fn restore_ui(app: &mut BimApp, ctx: &Context) {
         });
         crate::popup::footer(ui, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                restore = ui.button(t("Restore")).clicked();
+                // Restore is the primary action: lettered on the accent's fill, as the welcome screen's banner draws it.
+                let primary = egui::Button::new(RichText::new(t("Restore")).strong().color(crate::style::pal().on_accent))
+                    .fill(crate::style::pal().accent);
+                restore = ui.add(primary).clicked();
                 discard = ui.button(t("Keep what's on screen")).clicked();
             });
         });

@@ -553,6 +553,11 @@ pub(crate) fn color(c: Rgb) -> Color32 {
     let (r, g, b) = (i32::from(c.0), i32::from(c.1), i32::from(c.2));
     let shift = 255 - r.max(g).max(b) - r.min(g).min(b);
     let over = |v: i32| (26 + (v + shift).clamp(0, 255) * 206 / 255) as u8;
+    if crate::style::campus() {
+        // CampusBIM Dark's drawing: the same ramp laid from its green-black ground (#0F1713) to its pale green-grey lines.
+        let lay = |v: u8, lo: i32, hi: i32| (lo + (i32::from(v) - 26) * (hi - lo) / 206).clamp(0, 255) as u8;
+        return Color32::from_rgb(lay(over(r), 0x0F, 0xE9), lay(over(g), 0x17, 0xEF), lay(over(b), 0x13, 0xEB));
+    }
     Color32::from_rgb(over(r), over(g), over(b))
 }
 
@@ -1853,7 +1858,8 @@ impl BimApp {
     /// The navigation bar of view `id`, at its top right as in Revit: fit, zoom in, zoom out.
     pub(crate) fn nav_bar(&mut self, ui: &mut Ui, rect: Rect, id: Id) {
         let bar = Rect::from_min_size(self.nav_corner(rect), vec2(32.0, 80.0));
-        ui.painter_at(rect).rect(bar, 6.0, pal().surface, Stroke::new(1.0, pal().border), StrokeKind::Inside);
+        let card = if crate::style::campus() { pal().panel } else { pal().surface };
+        ui.painter_at(rect).rect(bar, 6.0, card, Stroke::new(1.0, pal().border), StrokeKind::Inside);
         ui.scope_builder(UiBuilder::new().max_rect(bar.shrink(3.0)).layout(Layout::top_down(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             if icon_button(ui, Icon::Fit, "Zoom to Fit").clicked() {

@@ -167,3 +167,12 @@ icon) and a loading screen that `apps/bimcraft/src/web.rs` removes once eframe s
 The footer's "Built on BIMCraft (open source)" opens About (also File > About CampusBIM), which keeps BIMCraft's copyright
 notice and links LICENSE-MIT, LICENSE-APACHE and NOTICE, copied into the site by Trunk. Crates, file formats (`.bimcraft`),
 code identifiers and the desktop app keep the BIMCraft name.
+
+## CampusBIM theme
+
+The web build opens in **CampusBIM Dark** (lime accent, dark green-black panels).
+**CampusBIM Light** and the older presets are under Settings → Theme. The web
+choice is kept in the browser (`localStorage` key `campusbim.look`); the desktop
+app keeps its own settings file and default look. The top bar stays dark in both
+CampusBIM themes and shows the save state: *Saved to cloud*, *Unsaved changes*
+or *Local only*. Window buttons are hidden on the web.
