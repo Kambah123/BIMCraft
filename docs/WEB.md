@@ -76,10 +76,10 @@ once eframe has started.
 
 ## Accounts and cloud save (CampusBIM)
 
-In the browser the app bar has a **Sign in** chip, left of the Palettes button, and File has
-**Save to Cloud**, **My Projects…** and **Sign In… / Sign Out**. This is browser-only
-(`crates/ui-egui/src/cloud.rs`, compiled for `wasm32` only); the desktop app has none of it and
-does not reach the network for it.
+In the browser the app bar (and the start page's title bar) has a **Sign in** chip, left of the
+Palettes button, and File has **Save to Cloud**, **My Projects…**, **Change Password…** and
+**Sign In… / Sign Out**. This is browser-only (`crates/ui-egui/src/cloud.rs`, compiled for
+`wasm32` only); the desktop app has none of it and does not reach the network for it.
 
 - **Accounts.** Email and password, on Supabase Auth (`/auth/v1/signup`, `/auth/v1/token`). The
   dialog has a Sign in and a Create account tab. If the project asks for email confirmation,
@@ -87,26 +87,51 @@ does not reach the network for it.
   The session (access and refresh tokens) is kept in `localStorage` under `campusbim.auth` and
   refreshed about five minutes before it runs out, and again just before any request whose
   token has under a minute left. Sign Out forgets it and revokes it on the server.
-- **Save to Cloud** encodes the project as on File > Save (`Session::encode("bimcraft")`),
-  uploads it to the private Storage bucket `projects` at `<user id>/<project id>.bimcraft`, and
-  upserts its row in `public.projects` (name, size, path; `updated_at` is set by a trigger).
-  Saving again a project that was saved or opened from the cloud overwrites the same entry. Not
-  signed in, it asks to sign in first and then saves. It marks the project saved.
-- **My Projects** lists the user's projects (newest first) with Open and Delete (Delete asks
-  first). Open downloads the file and opens it through `Session::provide_bytes`, the same path
-  as File > Open; Delete removes the file and the row.
+- **Dashboard.** Signed in, the app opens on the start page with **Your cloud projects**: a card
+  for each project (its picture, name, when it was last saved and its size), a search box, New
+  project, Open file and Refresh. A click on a card opens it; its ⋯ menu (or a right-click) has
+  Open, Rename, Duplicate and Delete (Delete asks first). Signed out, the start page is as before
+  with a "Sign in to see your cloud projects" card. My Projects brings the dashboard up over the
+  project on screen; Back returns to it.
+- **Save to Cloud** encodes the project as on File > Save (`Session::encode("bimcraft")`) and a
+  480 × 300 PNG of the view on screen (`Session::encode("png")`, the 3D view if that view can't be
+  drawn), uploads them to the private Storage bucket `projects` at `<user id>/<project id>.bimcraft`
+  and `.png`, and upserts the row in `public.projects` (name, size, file, `thumb_path`;
+  `updated_at` is set by a trigger). A picture that fails to upload leaves the project saved.
+  Saving again a project that was saved or opened from the cloud overwrites the same entry and
+  keeps the card's name. Not signed in, it asks to sign in first and then saves.
+- **Rename** changes the row only, and keeps the "last edited" date; opening the project puts
+  the card's name in it. **Duplicate** copies the file and the picture on the server
+  (`/storage/v1/object/copy`) under a new id, named "… (copy)". **Delete** removes both files and
+  the row. Projects saved before pictures existed show a placeholder.
+- **Passwords.** Sign in > **Forgot password?** asks Supabase to email a recovery link
+  (`/auth/v1/recover?redirect_to=<this page>`). The link comes back to the page with
+  `#access_token=…&type=recovery` in the address: the app takes the session, removes the hash from
+  the address (`history.replaceState`), and asks for a new password (**Set new password**,
+  `PUT /auth/v1/user`); the user is then signed in. An expired or used link (`#error=…`) opens
+  Forgot password again with the reason. **Change Password…** in the account menu does the same
+  for a signed-in user.
 - **Recovery** (IndexedDB, every 30 seconds) is unchanged and independent of the cloud.
 
-The database (the `projects` table, its Row Level Security and the bucket's policies) is
-`supabase/migrations/20261111000000_projects_and_storage.sql`. Each user reads and writes only their
-own rows and only files under their own `<user id>/` folder; the anonymous role has no access to
-the table. The client talks to Supabase's HTTP APIs with the page's own `fetch` (web-sys), so no
-HTTP client crate is added. The project URL and the publishable key are built in; they are
-public by design. `CAMPUSBIM_SUPABASE_URL` and `CAMPUSBIM_SUPABASE_KEY` at build time point the
-build at another project. Never put a service-role key in the client.
+The database is `supabase/migrations/`: the `projects` table, its Row Level Security and the
+bucket's policies (`20261111000000_projects_and_storage.sql`) and the pictures' column
+(`20261111120000_projects_thumbnails.sql`). Each user reads and writes only their own rows and only
+files under their own `<user id>/` folder; the anonymous role has no access to the table. The
+client talks to Supabase's HTTP APIs with the page's own `fetch` (web-sys), so no HTTP client crate
+is added; pictures are decoded with tiny-skia, already in the tree. The project URL and the
+publishable key are built in; they are public by design. `CAMPUSBIM_SUPABASE_URL` and
+`CAMPUSBIM_SUPABASE_KEY` at build time point the build at another project. Never put a
+service-role key in the client.
+
+Supabase settings the password emails depend on (Authentication > URL Configuration): the
+**Site URL** must be the app's address and the app's address must be in **Redirect URLs**, or the
+link lands on the Site URL instead of the app. Supabase's built-in email sender only delivers to
+the project team's addresses and a few an hour; real users need a custom SMTP sender
+(Authentication > Emails > SMTP Settings).
 
 `window.__bimcraftCloud` is a JSON string of the account and cloud state (signed in, email, the
-open cloud project, the last listed projects and the last message; never the tokens), for tests.
+open cloud project, the listed projects and whether their pictures are in, the open dialogs and
+the last message; never the tokens), for tests.
 
 ## What does not work yet
 
@@ -123,7 +148,7 @@ message; nothing fails silently or panics:
   behind the `native-services` feature, which the wasm build turns off. rustls does not compile
   for `wasm32-unknown-unknown` as used here.
 - **Cloud.** One file per project, last save wins: no sharing, no version history, and no
-  live collaboration yet. Password reset and email change are not in the dialog.
+  live collaboration yet. Changing the account's email is not in the app.
 - **The agent port.** The TCP control port (`--control`) assumes a localhost listener.
 - **Background work.** View jobs run on the window's thread (a large model pauses the page while its
   3D scene is built); Revit import on a thread and rayon's render pool do not get threads here.
