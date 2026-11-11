@@ -36,7 +36,20 @@ serde_json = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Document", "HtmlCanvasElement", "Window", "console"] }
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Blob",
+    "Document",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlInputElement",
+    "HtmlElement",
+    "File",
+    "FileList",
+    "Window",
+    "console",
+] }
 # eframe's wasm wgpu dep is `std` only; this turns on the WebGL2 backend so a browser
 # without a WebGPU adapter still starts (egui-wgpu already prefers WebGPU, then GL).
 wgpu = { version = "30", default-features = false, features = ["std", "webgl"] }

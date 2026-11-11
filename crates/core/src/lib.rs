@@ -12,6 +12,7 @@ mod autosave_tests;
 pub mod background_grid;
 pub mod bounds;
 pub mod bridge;
+pub mod bytes_io;
 pub mod cad;
 #[cfg(test)]
 mod cad_tests;
