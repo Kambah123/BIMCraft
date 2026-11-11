@@ -16,8 +16,9 @@ use std::sync::Arc;
 const DITHERING: bool = true;
 /// A vertex as epaint lays it out: position, texture position (unused) and colour.
 const STRIDE: u64 = 20;
-/// The shader's `Locals`.
-const LOCALS: u64 = 24;
+/// The shader's `Locals`, including 8 bytes of padding: a downlevel / WebGL device
+/// requires a uniform binding to be a multiple of 16 bytes (`BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED`).
+const LOCALS: u64 = 32;
 /// How many primitives a thread tessellates at a time.
 const PRIMS_AT_ONCE: usize = 2048;
 

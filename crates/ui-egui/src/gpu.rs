@@ -50,12 +50,14 @@ pub struct Card {
     pub(crate) failed: bool,
     /// How the 2D canvas draws its kept triangles, on the card egui draws on: made the first time, whatever the 3D view's setting.
     pub(crate) canvas: Option<std::sync::Arc<crate::retained::Pipeline>>,
+    /// Making the 2D pipeline failed (wgpu panics on some downlevel limits); the canvas stays on the processor.
+    canvas_failed: bool,
 }
 
 /// Wanted from the start: a window with a card draws on it unless the user says otherwise.
 impl Default for Card {
     fn default() -> Card {
-        Card { wanted: true, state: None, gpu: None, note: None, failed: false, canvas: None }
+        Card { wanted: true, state: None, gpu: None, note: None, failed: false, canvas: None, canvas_failed: false }
     }
 }
 
@@ -69,9 +71,18 @@ impl Card {
     /// How the 2D canvas's triangles are drawn on the window's card; none in a window with no wgpu device, as in every test.
     pub(crate) fn canvas(&mut self) -> Option<std::sync::Arc<crate::retained::Pipeline>> {
         if self.canvas.is_none()
+            && !self.canvas_failed
             && let Some(state) = &self.state
         {
-            self.canvas = Some(std::sync::Arc::new(crate::retained::Pipeline::new(&state.device, &state.queue, state.target_format)));
+            // wgpu's default error handler panics; a downlevel / WebGL device used to refuse the 24-byte
+            // canvas locals uniform. Catch that so the 2D canvas can stay on `canvas::paint`.
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::retained::Pipeline::new(&state.device, &state.queue, state.target_format)
+            }));
+            match made {
+                Ok(pipeline) => self.canvas = Some(std::sync::Arc::new(pipeline)),
+                Err(_) => self.canvas_failed = true,
+            }
         }
         self.canvas.clone()
     }
