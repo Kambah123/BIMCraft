@@ -1797,6 +1797,12 @@ impl BimApp {
                 FontId::proportional(12.5),
                 pal().app_bar_muted,
             );
+            #[cfg(target_arch = "wasm32")]
+            {
+                let right = bar.right() - 3.0 * titlebar::BUTTON_WIDTH - 4.0;
+                let at = Rect::from_min_size(pos2(right, bar.center().y - 12.0), vec2(0.0, 24.0));
+                cloud::account_chip(self, ui, at);
+            }
             titlebar::caption_buttons(ui, bar);
         });
     }
@@ -3048,10 +3054,10 @@ impl BimApp {
         }
     }
 
-    /// Encode the project or view in memory and start a download. Native `save_to` is unchanged.
+    /// What `encode` draws for the view on screen, `width` by `height` pixels.
     #[cfg(target_arch = "wasm32")]
-    fn save_to_web(&mut self, path: &Path, ext: &str) -> bool {
-        let mut p = serde_json::json!({"width": 1600, "height": 1000});
+    fn view_params(&self, width: u32, height: u32) -> serde_json::Value {
+        let mut p = serde_json::json!({"width": width, "height": height});
         match (self.sheet, self.orbit.camera) {
             (Sheet::Plan(id) | Sheet::Section(id) | Sheet::Paper(id), _) => p["view"] = serde_json::json!(id),
             (Sheet::Ceiling(id), _) => (p["view"], p["ceiling"]) = (serde_json::json!(id), serde_json::json!(true)),
@@ -3063,6 +3069,24 @@ impl BimApp {
             }
             (Sheet::Schedule(_) | Sheet::Table(_), _) => {}
         }
+        p
+    }
+
+    /// A small PNG of the view on screen (the 3D view when it can't be drawn), for a cloud project's card.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn view_png(&mut self, width: u32, height: u32) -> Option<Vec<u8>> {
+        let p = self.view_params(width, height);
+        if let Ok((bytes, _)) = self.session.encode("png", &p) {
+            return Some(bytes);
+        }
+        let p = serde_json::json!({"width": width, "height": height, "view": "{3D}"});
+        self.session.encode("png", &p).ok().map(|(bytes, _)| bytes)
+    }
+
+    /// Encode the project or view in memory and start a download. Native `save_to` is unchanged.
+    #[cfg(target_arch = "wasm32")]
+    fn save_to_web(&mut self, path: &Path, ext: &str) -> bool {
+        let p = self.view_params(1600, 1000);
         let format = if ext.is_empty() { "bimcraft" } else { ext };
         match self.session.encode(format, &p) {
             Ok((bytes, _reply)) => {

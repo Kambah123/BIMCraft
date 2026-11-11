@@ -247,12 +247,12 @@ impl BimApp {
                                     self.start_actions(ui, &mut click);
                                 });
                                 ui.add_space(36.0);
-                                ui.vertical(|ui| self.start_recent(ui, &mut click));
+                                ui.vertical(|ui| self.start_right(ui, &mut click));
                             });
                         } else {
                             self.start_actions(ui, &mut click);
                             ui.add_space(28.0);
-                            self.start_recent(ui, &mut click);
+                            self.start_right(ui, &mut click);
                         }
                         ui.add_space(36.0);
                     });
@@ -327,6 +327,23 @@ impl BimApp {
                 *click = Some(Click::Back);
             }
         }
+    }
+
+    /// The page's right side: the recent files; in the browser, the signed-in user's cloud projects first (or a prompt to sign in).
+    fn start_right(&self, ui: &mut Ui, click: &mut Option<Click>) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            match crate::cloud::dashboard(self, ui) {
+                Some(crate::cloud::DashClick::New) => *click = Some(Click::New),
+                Some(crate::cloud::DashClick::Open) => *click = Some(Click::Open),
+                None => {}
+            }
+            if crate::cloud::signed_in_email().is_some() {
+                return;
+            }
+            ui.add_space(28.0);
+        }
+        self.start_recent(ui, click);
     }
 
     /// The recent files, as tiles.
@@ -506,7 +523,7 @@ impl BimApp {
 }
 
 /// A section's name, small and spaced, over it.
-fn heading(ui: &mut Ui, text: &str) {
+pub(crate) fn heading(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(t(text).to_uppercase()).size(12.0).strong().color(pal().muted).extra_letter_spacing(1.2));
     ui.add_space(10.0);
 }
@@ -548,7 +565,7 @@ fn pill(ui: &mut Ui, text: &str, color: Color32) {
 }
 
 /// The colour of a card's shadow.
-fn shade(hot: bool) -> Color32 {
+pub(crate) fn shade(hot: bool) -> Color32 {
     let a = match (style::dark(), hot) {
         (true, true) => 140,
         (true, false) => 90,
@@ -587,7 +604,7 @@ fn backdrop(ui: &Ui) {
 }
 
 /// A rectangle's outline, dashed and rounded at its corners.
-fn dashed(ui: &Ui, r: Rect) {
+pub(crate) fn dashed(ui: &Ui, r: Rect) {
     let stroke = Stroke::new(1.5, pal().border);
     let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
     for w in corners.windows(2) {

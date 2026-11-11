@@ -1,5 +1,6 @@
 //! CampusBIM accounts and cloud save, in the browser only: sign up, sign in and sign out with an email and a password,
-//! Save to Cloud and My Projects. It talks to Supabase's Auth, REST and Storage HTTP APIs with the page's own `fetch`;
+//! Save to Cloud (the project and a picture of the view), the start page's dashboard of the user's projects (open, rename,
+//! duplicate, delete), and Forgot password / Set new password / Change password. It talks to Supabase's Auth, REST and Storage HTTP APIs with the page's own `fetch`;
 //! the session (its access and refresh tokens) is kept in `localStorage` and refreshed before it runs out.
 //!
 //! The project URL and the publishable key are public (Row Level Security keeps each user to their own rows and files),
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bimcraft_core::model::Model;
-use egui::{Align, Context, Id, Key, Layout, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Align, Context, Id, Key, Layout, RichText, Sense, TextEdit, Ui, vec2};
 use serde_json::{Value, json};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -48,6 +49,8 @@ struct Auth {
 enum Mode {
     SignIn,
     SignUp,
+    /// Forgot password: the email to send Supabase's recovery link to.
+    Reset,
 }
 
 struct AccountDialog {
@@ -59,6 +62,15 @@ struct AccountDialog {
     info: Option<String>,
 }
 
+/// Set new password (from a recovery link) or Change password (from the account menu).
+struct PasswordDialog {
+    recovery: bool,
+    password: String,
+    again: String,
+    busy: bool,
+    error: Option<String>,
+}
+
 #[derive(Clone)]
 struct Row {
     id: String,
@@ -66,14 +78,19 @@ struct Row {
     updated_at: String,
     size: i64,
     path: String,
+    thumb: Option<String>,
 }
 
-#[derive(Default)]
-struct ProjectsDialog {
-    rows: Option<Vec<Row>>,
-    busy: bool,
-    error: Option<String>,
-    confirm: Option<String>,
+enum Thumb {
+    Loading,
+    Ready(egui::TextureHandle),
+    None,
+}
+
+/// What the dashboard asks the start page to do.
+pub(crate) enum DashClick {
+    New,
+    Open,
 }
 
 enum Event {
@@ -84,6 +101,13 @@ enum Event {
     Listed(Result<Vec<Row>, String>),
     Opened(Result<(String, String, Vec<u8>), String>),
     Deleted(Result<String, String>),
+    Renamed(Result<(String, String), String>),
+    Duplicated(Result<String, String>),
+    ThumbLoaded(String, Option<Vec<u8>>),
+    ResetSent(Result<(), String>),
+    /// A recovery link's session, with the user it belongs to.
+    Recovered(Result<Auth, String>),
+    PasswordSet(Result<(), String>),
 }
 
 #[derive(Default)]
@@ -91,7 +115,17 @@ struct Cloud {
     auth: Option<Auth>,
     loaded: bool,
     account: Option<AccountDialog>,
-    projects: Option<ProjectsDialog>,
+    password: Option<PasswordDialog>,
+    /// The signed-in user's projects, newest first; none until listed.
+    rows: Option<Vec<Row>>,
+    listing: bool,
+    list_error: Option<String>,
+    /// What a card's menu is waiting on (rename, duplicate, delete, open), so the cards hold still.
+    working: Option<String>,
+    thumbs: std::collections::HashMap<String, (String, Thumb)>,
+    search: String,
+    renaming: Option<(String, String)>,
+    deleting: Option<Row>,
     /// The cloud project on screen (its id and name) and the window's project it belongs to.
     current: Option<(String, String, u64)>,
     refreshing: bool,
@@ -217,7 +251,7 @@ fn parse_auth(v: &Value) -> Option<Auth> {
 
 async fn sign_in(email: String, password: String, mode: Mode) -> Result<Option<Auth>, String> {
     let url = match mode {
-        Mode::SignIn => format!("{}/auth/v1/token?grant_type=password", base_url()),
+        Mode::SignIn | Mode::Reset => format!("{}/auth/v1/token?grant_type=password", base_url()),
         Mode::SignUp => format!("{}/auth/v1/signup", base_url()),
     };
     let v = json_call("POST", &url, &[], Some(Body::Json(json!({"email": email, "password": password})))).await?;
@@ -259,24 +293,41 @@ fn encode_path(path: &str) -> String {
     path.split('/').map(|p| String::from(js_sys::encode_uri_component(p))).collect::<Vec<_>>().join("/")
 }
 
-async fn upload(id: String, name: String, bytes: Vec<u8>) -> Result<(String, String, usize), String> {
+fn object_url(path: &str) -> String {
+    format!("{}/storage/v1/object/{BUCKET}/{}", base_url(), encode_path(path))
+}
+
+async fn put_object(bearer: &str, path: &str, bytes: Vec<u8>, mime: &str) -> Result<(), String> {
+    json_call(
+        "POST",
+        &object_url(path),
+        &[("Authorization", bearer.to_owned()), ("x-upsert", "true".into()), ("Content-Type", mime.into())],
+        Some(Body::Bytes(bytes)),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn upload(id: String, name: String, bytes: Vec<u8>, thumb: Option<Vec<u8>>) -> Result<(String, String, usize), String> {
     let (bearer, user) = bearer().await?;
     let path = format!("{user}/{id}.bimcraft");
     let size = bytes.len();
-    let url = format!("{}/storage/v1/object/{BUCKET}/{}", base_url(), encode_path(&path));
-    json_call(
-        "POST",
-        &url,
-        &[("Authorization", bearer.clone()), ("x-upsert", "true".into()), ("Content-Type", "application/json".into())],
-        Some(Body::Bytes(bytes)),
-    )
-    .await?;
+    put_object(&bearer, &path, bytes, "application/json").await?;
+    let mut row = json!({"id": id, "name": name, "size_bytes": size, "storage_path": path});
+    // A picture that doesn't go up leaves the project saved, with the card's placeholder (or its last picture).
+    if let Some(png) = thumb {
+        let thumb_path = format!("{user}/{id}.png");
+        match put_object(&bearer, &thumb_path, png, "image/png").await {
+            Ok(()) => row["thumb_path"] = json!(thumb_path),
+            Err(e) => web_sys::console::warn_1(&format!("bimcraft: the project's picture wasn't saved: {e}").into()),
+        }
+    }
     let url = format!("{}/rest/v1/projects?on_conflict=id", base_url());
     json_call(
         "POST",
         &url,
         &[("Authorization", bearer), ("Prefer", "resolution=merge-duplicates,return=minimal".into())],
-        Some(Body::Json(json!({"id": id, "name": name, "size_bytes": size, "storage_path": path}))),
+        Some(Body::Json(row)),
     )
     .await?;
     Ok((id, name, size))
@@ -284,7 +335,7 @@ async fn upload(id: String, name: String, bytes: Vec<u8>) -> Result<(String, Str
 
 async fn list() -> Result<Vec<Row>, String> {
     let (bearer, _) = bearer().await?;
-    let url = format!("{}/rest/v1/projects?select=id,name,updated_at,size_bytes,storage_path&order=updated_at.desc", base_url());
+    let url = format!("{}/rest/v1/projects?select=id,name,updated_at,size_bytes,storage_path,thumb_path&order=updated_at.desc", base_url());
     let v = json_call("GET", &url, &[("Authorization", bearer)], None).await?;
     let rows = v.as_array().cloned().unwrap_or_default();
     Ok(rows
@@ -296,32 +347,161 @@ async fn list() -> Result<Vec<Row>, String> {
                 updated_at: r.get("updated_at").and_then(Value::as_str).unwrap_or("").to_owned(),
                 size: r.get("size_bytes").and_then(Value::as_i64).unwrap_or(0),
                 path: r.get("storage_path")?.as_str()?.to_owned(),
+                thumb: r.get("thumb_path").and_then(Value::as_str).map(str::to_owned),
             })
         })
         .collect())
 }
 
-async fn download(row: Row) -> Result<(String, String, Vec<u8>), String> {
+async fn get_object(path: &str) -> Result<Vec<u8>, String> {
     let (bearer, _) = bearer().await?;
-    let url = format!("{}/storage/v1/object/authenticated/{BUCKET}/{}", base_url(), encode_path(&row.path));
+    let url = format!("{}/storage/v1/object/authenticated/{BUCKET}/{}", base_url(), encode_path(path));
     let (status, bytes) = http("GET", &url, &[("Authorization", bearer)], None).await?;
     if !(200..300).contains(&status) {
         return Err(error_text(status, &bytes));
     }
+    Ok(bytes)
+}
+
+/// The file, with its project's name made the card's (a rename or a copy changes only the row).
+async fn download(row: Row) -> Result<(String, String, Vec<u8>), String> {
+    let bytes = get_object(&row.path).await?;
+    let bytes = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(mut v) if v.get("name").is_some_and(Value::is_string) && v["name"].as_str() != Some(row.name.as_str()) => {
+            v["name"] = json!(row.name);
+            serde_json::to_vec(&v).unwrap_or(bytes)
+        }
+        _ => bytes,
+    };
     Ok((row.id, row.name, bytes))
 }
 
 async fn delete(row: Row) -> Result<String, String> {
     let (bearer, _) = bearer().await?;
-    let url = format!("{}/storage/v1/object/{BUCKET}/{}", base_url(), encode_path(&row.path));
-    let (status, bytes) = http("DELETE", &url, &[("Authorization", bearer.clone())], None).await?;
+    let mut prefixes = vec![row.path.clone()];
+    prefixes.extend(row.thumb.clone());
+    let url = format!("{}/storage/v1/object/{BUCKET}", base_url());
+    let (status, bytes) =
+        http("DELETE", &url, &[("Authorization", bearer.clone())], Some(Body::Json(json!({"prefixes": prefixes})))).await?;
     // A row whose file is already gone can still be deleted.
-    if !(200..300).contains(&status) && status != 404 && status != 400 {
+    if !(200..300).contains(&status) && status != 404 {
         return Err(error_text(status, &bytes));
     }
     let url = format!("{}/rest/v1/projects?id=eq.{}", base_url(), js_sys::encode_uri_component(&row.id));
     json_call("DELETE", &url, &[("Authorization", bearer)], None).await?;
     Ok(row.id)
+}
+
+async fn rename(id: String, name: String) -> Result<(String, String), String> {
+    let (bearer, _) = bearer().await?;
+    let url = format!("{}/rest/v1/projects?id=eq.{}", base_url(), js_sys::encode_uri_component(&id));
+    json_call("PATCH", &url, &[("Authorization", bearer), ("Prefer", "return=minimal".into())], Some(Body::Json(json!({"name": name}))))
+        .await?;
+    Ok((id, name))
+}
+
+async fn copy_object(bearer: &str, from: &str, to: &str) -> Result<(), String> {
+    let url = format!("{}/storage/v1/object/copy", base_url());
+    json_call(
+        "POST",
+        &url,
+        &[("Authorization", bearer.to_owned())],
+        Some(Body::Json(json!({"bucketId": BUCKET, "sourceKey": from, "destinationKey": to}))),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn duplicate(row: Row, id: String) -> Result<String, String> {
+    let (bearer, user) = bearer().await?;
+    let path = format!("{user}/{id}.bimcraft");
+    copy_object(&bearer, &row.path, &path).await?;
+    let mut thumb = None;
+    if let Some(from) = &row.thumb {
+        let to = format!("{user}/{id}.png");
+        if copy_object(&bearer, from, &to).await.is_ok() {
+            thumb = Some(to);
+        }
+    }
+    let base: String = row.name.chars().take(190).collect();
+    let name = format!("{base} {}", t("(copy)"));
+    let url = format!("{}/rest/v1/projects", base_url());
+    let body = json!({"id": id, "name": name, "size_bytes": row.size, "storage_path": path, "thumb_path": thumb});
+    json_call("POST", &url, &[("Authorization", bearer), ("Prefer", "return=minimal".into())], Some(Body::Json(body))).await?;
+    Ok(name)
+}
+
+/// The page's address without its hash: where a recovery link brings the user back to.
+fn app_url() -> String {
+    let Some(loc) = web_sys::window().map(|w| w.location()) else { return String::new() };
+    format!("{}{}", loc.origin().unwrap_or_default(), loc.pathname().unwrap_or_default())
+}
+
+async fn send_reset(email: String) -> Result<(), String> {
+    let url = format!("{}/auth/v1/recover?redirect_to={}", base_url(), String::from(js_sys::encode_uri_component(&app_url())));
+    json_call("POST", &url, &[], Some(Body::Json(json!({"email": email})))).await.map(|_| ())
+}
+
+/// A recovery link's tokens, completed with the user they belong to.
+async fn recovered(access: String, refresh: String, expires_at: f64) -> Result<Auth, String> {
+    let url = format!("{}/auth/v1/user", base_url());
+    let user = json_call("GET", &url, &[("Authorization", format!("Bearer {access}"))], None).await?;
+    let id = user.get("id").and_then(Value::as_str).ok_or_else(|| t("The reset link didn't name an account.").to_owned())?;
+    Ok(Auth { access, refresh, expires_at, user: id.to_owned(), email: user.get("email").and_then(Value::as_str).unwrap_or("").to_owned() })
+}
+
+async fn set_password(password: String) -> Result<(), String> {
+    let (bearer, _) = bearer().await?;
+    let url = format!("{}/auth/v1/user", base_url());
+    json_call("PUT", &url, &[("Authorization", bearer)], Some(Body::Json(json!({"password": password})))).await.map(|_| ())
+}
+
+/// What a link from Supabase's email left in the address's hash: a recovery session, an error, or nothing for us.
+enum Landing {
+    Recovery { access: String, refresh: String, expires_at: f64 },
+    Error(String),
+}
+
+fn read_hash(hash: &str) -> Option<Landing> {
+    let hash = hash.strip_prefix('#').unwrap_or(hash);
+    if hash.is_empty() {
+        return None;
+    }
+    let mut fields = std::collections::HashMap::new();
+    for pair in hash.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = js_sys::decode_uri_component(&v.replace('+', " ")).ok().map(String::from).unwrap_or_else(|| v.to_owned());
+        fields.insert(k.to_owned(), v);
+    }
+    if let Some(e) = fields.get("error_description").or_else(|| fields.get("error")) {
+        let expired = fields.get("error_code").is_some_and(|c| c == "otp_expired");
+        return Some(Landing::Error(if expired {
+            t("That reset link has expired or was already used. Ask for a new one with Forgot password.").to_owned()
+        } else {
+            e.clone()
+        }));
+    }
+    if fields.get("type").map(String::as_str) != Some("recovery") {
+        return None;
+    }
+    let access = fields.get("access_token")?.clone();
+    let refresh = fields.get("refresh_token")?.clone();
+    let expires_at = fields
+        .get("expires_at")
+        .and_then(|s| s.parse().ok())
+        .or_else(|| fields.get("expires_in").and_then(|s| s.parse::<f64>().ok()).map(|s| now_secs() + s))
+        .unwrap_or_else(|| now_secs() + 3600.0);
+    Some(Landing::Recovery { access, refresh, expires_at })
+}
+
+/// Take the tokens out of the address, so a reload or a shared link doesn't carry them.
+fn clear_hash() {
+    let Some(window) = web_sys::window() else { return };
+    let loc = window.location();
+    let clean = format!("{}{}", loc.pathname().unwrap_or_default(), loc.search().unwrap_or_default());
+    if let Ok(history) = window.history() {
+        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&clean));
+    }
 }
 
 // ---------- the session in localStorage ----------
@@ -350,18 +530,17 @@ fn load_auth() -> Option<Auth> {
 
 // ---------- actions ----------
 
-fn spawn_sign_in(email: String, password: String, mode: Mode) {
-    wasm_bindgen_futures::spawn_local(async move { push(Event::SignedIn(sign_in(email, password, mode).await)) });
+fn spawn<F: std::future::Future<Output = Event> + 'static>(f: F) {
+    wasm_bindgen_futures::spawn_local(async move { push(f.await) });
 }
 
-fn spawn_list() {
-    with(|c| {
-        if let Some(p) = c.projects.as_mut() {
-            p.busy = true;
-            p.error = None;
-        }
-    });
-    wasm_bindgen_futures::spawn_local(async move { push(Event::Listed(list().await)) });
+/// List the user's projects again (the dashboard and My Projects show them).
+fn refresh_list() {
+    if with(|c| std::mem::replace(&mut c.listing, true)) {
+        return;
+    }
+    with(|c| c.list_error = None);
+    spawn(async { Event::Listed(list().await) });
 }
 
 fn set_message(app: &mut BimApp, text: String, error: bool) {
@@ -369,7 +548,8 @@ fn set_message(app: &mut BimApp, text: String, error: bool) {
     app.status = Status { text, error };
 }
 
-/// File > Save to Cloud: the project as a `.bimcraft`, uploaded under the user's folder, its row added or brought up to date.
+/// File > Save to Cloud: the project as a `.bimcraft` and a picture of the view, uploaded under the user's folder, its row
+/// added or brought up to date.
 pub(crate) fn save_to_cloud(app: &mut BimApp) {
     if with(|c| c.saving.is_some()) {
         return;
@@ -386,14 +566,21 @@ pub(crate) fn save_to_cloud(app: &mut BimApp) {
     if bytes.len() > MAX_UPLOAD {
         return set_message(app, t("This project is larger than 100 MB, the most the cloud keeps for one project.").to_owned(), true);
     }
+    let thumb = app.view_png(THUMB_W, THUMB_H);
     let uid = app.session.model.uid;
-    let name = app.session.model.name.trim().to_owned();
-    let name = if name.is_empty() { "Untitled".to_owned() } else { name.chars().take(200).collect() };
-    let id = with(|c| c.current.as_ref().filter(|(_, _, u)| *u == uid).map(|(id, _, _)| id.clone())).unwrap_or_else(new_id);
+    // A project from the cloud keeps its card's name (a rename changes only the card).
+    let (id, name) = with(|c| c.current.as_ref().filter(|(_, _, u)| *u == uid).map(|(id, name, _)| (id.clone(), name.clone())))
+        .unwrap_or_else(|| {
+            let name = app.session.model.name.trim().to_owned();
+            (new_id(), if name.is_empty() { "Untitled".to_owned() } else { name.chars().take(200).collect() })
+        });
     with(|c| c.saving = Some(Arc::clone(&app.session.model)));
     set_message(app, format!("{} {name}…", t("Saving to the cloud:")), false);
-    wasm_bindgen_futures::spawn_local(async move { push(Event::Saved(upload(id, name, bytes).await)) });
+    spawn(async move { Event::Saved(upload(id, name, bytes, thumb).await) });
 }
+
+const THUMB_W: u32 = 480;
+const THUMB_H: u32 = 300;
 
 fn new_id() -> String {
     let crypto = web_sys::window().and_then(|w| js_sys::Reflect::get(&w, &JsValue::from_str("crypto")).ok());
@@ -415,19 +602,34 @@ fn open_account(mode: Mode) {
     });
 }
 
-pub(crate) fn open_projects() {
+/// My Projects: the start page's dashboard, over the project on screen.
+pub(crate) fn open_projects(app: &mut BimApp) {
     if with(|c| c.auth.is_none()) {
         open_account(Mode::SignIn);
         return;
     }
-    with(|c| c.projects = Some(ProjectsDialog::default()));
-    spawn_list();
+    show_dashboard(app);
+}
+
+fn show_dashboard(app: &mut BimApp) {
+    if !app.home.shown {
+        (app.home.shown, app.home.over) = (true, true);
+    }
+    refresh_list();
+}
+
+fn open_password(recovery: bool) {
+    with(|c| c.password = Some(PasswordDialog { recovery, password: String::new(), again: String::new(), busy: false, error: None }));
 }
 
 pub(crate) fn sign_out(app: &mut BimApp) {
     let auth = with(|c| {
-        c.projects = None;
+        c.rows = None;
+        c.thumbs.clear();
         c.current = None;
+        c.renaming = None;
+        c.deleting = None;
+        c.password = None;
         c.auth.take()
     });
     store_auth(None);
@@ -447,12 +649,12 @@ pub(crate) fn signed_in_email() -> Option<String> {
 
 // ---------- each frame ----------
 
-/// Load the session once, refresh it before it runs out, apply what came back from the network, and draw the dialogs.
+/// Load the session once (or take a recovery link's), refresh it before it runs out, apply what came back from the network,
+/// and draw the dialogs.
 pub(crate) fn poll(app: &mut BimApp, ctx: &Context) {
     REPAINT.with(|r| *r.borrow_mut() = Some(ctx.clone()));
     if !with(|c| std::mem::replace(&mut c.loaded, true)) {
-        let auth = load_auth();
-        with(|c| c.auth = auth);
+        first_frame(app);
     }
     if let Some(token) = with(|c| match &c.auth {
         Some(a) if !c.refreshing && a.expires_at - now_secs() < 300.0 => {
@@ -461,14 +663,14 @@ pub(crate) fn poll(app: &mut BimApp, ctx: &Context) {
         }
         _ => None,
     }) {
-        wasm_bindgen_futures::spawn_local(async move { push(Event::Refreshed(refresh(token).await)) });
+        spawn(async move { Event::Refreshed(refresh(token).await) });
     }
     if let Some(a) = with(|c| c.auth.as_ref().map(|a| a.expires_at)) {
         let left = (a - now_secs() - 290.0).clamp(1.0, 3600.0);
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
     }
     for event in with(|c| std::mem::take(&mut c.events)) {
-        apply(app, event);
+        apply(app, ctx, event);
     }
     let uid = app.session.model.uid;
     with(|c| {
@@ -476,12 +678,47 @@ pub(crate) fn poll(app: &mut BimApp, ctx: &Context) {
             c.current = None;
         }
     });
-    account_window(app, ctx);
-    projects_window(app, ctx);
+    account_window(ctx);
+    password_window(ctx);
+    rename_window(ctx);
+    delete_window(ctx);
     publish();
 }
 
-fn apply(app: &mut BimApp, event: Event) {
+fn first_frame(app: &mut BimApp) {
+    let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
+    match read_hash(&hash) {
+        Some(Landing::Recovery { access, refresh, expires_at }) => {
+            clear_hash();
+            open_password(true);
+            with(|c| {
+                if let Some(p) = c.password.as_mut() {
+                    p.busy = true;
+                }
+            });
+            spawn(async move { Event::Recovered(recovered(access, refresh, expires_at).await) });
+            return;
+        }
+        Some(Landing::Error(e)) => {
+            clear_hash();
+            open_account(Mode::Reset);
+            with(|c| {
+                if let Some(a) = c.account.as_mut() {
+                    a.error = Some(e);
+                }
+            });
+        }
+        None => {}
+    }
+    let auth = load_auth();
+    let signed_in = auth.is_some();
+    with(|c| c.auth = auth);
+    if signed_in {
+        show_dashboard(app);
+    }
+}
+
+fn apply(app: &mut BimApp, ctx: &Context, event: Event) {
     match event {
         Event::SignedIn(Ok(Some(auth))) => {
             store_auth(Some(&auth));
@@ -489,11 +726,15 @@ fn apply(app: &mut BimApp, event: Event) {
             let then_save = with(|c| {
                 c.auth = Some(auth);
                 c.account = None;
+                c.rows = None;
+                c.thumbs.clear();
                 std::mem::take(&mut c.save_after_sign_in)
             });
             set_message(app, format!("{} {email}", t("Signed in as")), false);
             if then_save {
                 save_to_cloud(app);
+            } else {
+                show_dashboard(app);
             }
         }
         Event::SignedIn(Ok(None)) => with(|c| {
@@ -504,10 +745,48 @@ fn apply(app: &mut BimApp, event: Event) {
                 a.info = Some(t("Check your email to confirm your account, then sign in.").to_owned());
             }
         }),
-        Event::SignedIn(Err(e)) => with(|c| {
+        Event::SignedIn(Err(e)) | Event::ResetSent(Err(e)) => with(|c| {
             if let Some(a) = c.account.as_mut() {
                 a.busy = false;
                 a.error = Some(e);
+            }
+        }),
+        Event::ResetSent(Ok(())) => with(|c| {
+            if let Some(a) = c.account.as_mut() {
+                a.busy = false;
+                a.info = Some(t("If there's an account for that email, a link to set a new password is on its way.").to_owned());
+            }
+        }),
+        Event::Recovered(Ok(auth)) => {
+            store_auth(Some(&auth));
+            with(|c| {
+                c.auth = Some(auth);
+                if let Some(p) = c.password.as_mut() {
+                    p.busy = false;
+                }
+            });
+        }
+        Event::Recovered(Err(e)) => {
+            with(|c| c.password = None);
+            open_account(Mode::Reset);
+            with(|c| {
+                if let Some(a) = c.account.as_mut() {
+                    a.error = Some(format!("{} {e}", t("That reset link didn't work.")));
+                }
+            });
+        }
+        Event::PasswordSet(Ok(())) => {
+            let recovery = with(|c| c.password.take().is_some_and(|p| p.recovery));
+            let email = signed_in_email().unwrap_or_default();
+            set_message(app, format!("{} {email}", t("Password changed. Signed in as")), false);
+            if recovery {
+                show_dashboard(app);
+            }
+        }
+        Event::PasswordSet(Err(e)) => with(|c| {
+            if let Some(p) = c.password.as_mut() {
+                p.busy = false;
+                p.error = Some(e);
             }
         }),
         Event::Refreshed(result) => {
@@ -547,63 +826,88 @@ fn apply(app: &mut BimApp, event: Event) {
             let uid = app.session.model.uid;
             with(|c| c.current = Some((id, name.clone(), uid)));
             set_message(app, format!("{} {name} ({})", t("Saved to the cloud:"), size_text(size as i64)), false);
-            if with(|c| c.projects.is_some()) {
-                spawn_list();
-            }
+            refresh_list();
         }
         Event::Saved(Err(e)) => {
             with(|c| c.saving = None);
             set_message(app, format!("{} {e}", t("Couldn't save to the cloud.")), true);
         }
         Event::Listed(result) => with(|c| {
-            if let Some(p) = c.projects.as_mut() {
-                p.busy = false;
-                match result {
-                    Ok(rows) => p.rows = Some(rows),
-                    Err(e) => p.error = Some(e),
+            c.listing = false;
+            match result {
+                Ok(rows) => {
+                    // Pictures of projects gone, or saved again since, are let go.
+                    c.thumbs.retain(|id, (stamp, _)| rows.iter().any(|r| &r.id == id && &r.updated_at == stamp));
+                    c.rows = Some(rows);
                 }
+                Err(e) => c.list_error = Some(e),
             }
         }),
+        Event::ThumbLoaded(id, bytes) => {
+            let image = bytes
+                .and_then(|b| tiny_skia::Pixmap::decode_png(&b).ok())
+                .map(|pm| egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()));
+            let thumb = match image {
+                Some(image) => Thumb::Ready(ctx.load_texture(format!("cloud-thumb-{id}"), image, egui::TextureOptions::LINEAR)),
+                None => Thumb::None,
+            };
+            with(|c| {
+                if let Some((_, t)) = c.thumbs.get_mut(&id) {
+                    *t = thumb;
+                }
+            });
+        }
         Event::Opened(Ok((id, name, bytes))) => {
+            with(|c| c.working = None);
             let file = format!("{}.bimcraft", name.replace(['/', '\\'], "-"));
             let path = PathBuf::from(&file);
             app.session.provide_bytes(&path, bytes);
             if app.open_path(&path) {
                 let uid = app.session.model.uid;
-                with(|c| {
-                    c.current = Some((id, name.clone(), uid));
-                    c.projects = None;
-                });
+                with(|c| c.current = Some((id, name.clone(), uid)));
+                app.home.shown = false;
                 set_message(app, format!("{} {name}", t("Opened from the cloud:")), false);
             } else {
                 let e = app.status.text.clone();
-                with(|c| {
-                    if let Some(p) = c.projects.as_mut() {
-                        p.busy = false;
-                        p.error = Some(e);
-                    }
-                });
+                with(|c| c.list_error = Some(e));
             }
         }
-        Event::Opened(Err(e)) | Event::Deleted(Err(e)) => with(|c| {
-            if let Some(p) = c.projects.as_mut() {
-                p.busy = false;
-                p.error = Some(e);
-            }
-        }),
+        Event::Opened(Err(e)) | Event::Deleted(Err(e)) | Event::Renamed(Err(e)) | Event::Duplicated(Err(e)) => {
+            with(|c| {
+                c.working = None;
+                c.list_error = Some(e.clone());
+            });
+            set_message(app, e, true);
+        }
         Event::Deleted(Ok(id)) => {
             with(|c| {
+                c.working = None;
                 if c.current.as_ref().is_some_and(|(cur, _, _)| *cur == id) {
                     c.current = None;
                 }
-                if let Some(p) = c.projects.as_mut() {
-                    p.busy = false;
-                    if let Some(rows) = p.rows.as_mut() {
-                        rows.retain(|r| r.id != id);
-                    }
+                if let Some(rows) = c.rows.as_mut() {
+                    rows.retain(|r| r.id != id);
                 }
+                c.thumbs.remove(&id);
             });
             set_message(app, t("Deleted from the cloud.").to_owned(), false);
+        }
+        Event::Renamed(Ok((id, name))) => {
+            with(|c| {
+                c.working = None;
+                if let Some(cur) = c.current.as_mut().filter(|(cur, _, _)| *cur == id) {
+                    cur.1.clone_from(&name);
+                }
+                if let Some(row) = c.rows.as_mut().and_then(|rows| rows.iter_mut().find(|r| r.id == id)) {
+                    row.name.clone_from(&name);
+                }
+            });
+            set_message(app, format!("{} {name}", t("Renamed to")), false);
+        }
+        Event::Duplicated(Ok(name)) => {
+            with(|c| c.working = None);
+            set_message(app, format!("{} {name}", t("Duplicated as")), false);
+            refresh_list();
         }
     }
 }
@@ -616,11 +920,18 @@ fn publish() {
             "email": c.auth.as_ref().map(|a| a.email.clone()),
             "current": c.current.as_ref().map(|(id, name, _)| json!({"id": id, "name": name})),
             "saving": c.saving.is_some(),
+            "working": c.working,
             "accountOpen": c.account.is_some(),
+            "accountMode": c.account.as_ref().map(|a| match a.mode { Mode::SignIn => "signIn", Mode::SignUp => "signUp", Mode::Reset => "reset" }),
             "accountError": c.account.as_ref().and_then(|a| a.error.clone()),
             "accountInfo": c.account.as_ref().and_then(|a| a.info.clone()),
-            "projects": c.projects.as_ref().and_then(|p| p.rows.as_ref()).map(|rows| rows.iter().map(|r| json!({"id": r.id, "name": r.name, "size": r.size})).collect::<Vec<_>>()),
-            "projectsError": c.projects.as_ref().and_then(|p| p.error.clone()),
+            "passwordOpen": c.password.as_ref().map(|p| if p.recovery { "recovery" } else { "change" }),
+            "passwordError": c.password.as_ref().and_then(|p| p.error.clone()),
+            "projects": c.rows.as_ref().map(|rows| rows.iter().map(|r| json!({
+                "id": r.id, "name": r.name, "size": r.size, "thumb": r.thumb.is_some(),
+                "thumbShown": matches!(c.thumbs.get(&r.id), Some((_, Thumb::Ready(_)))),
+            })).collect::<Vec<_>>()),
+            "projectsError": c.list_error,
             "message": c.message,
         })
         .to_string()
@@ -656,17 +967,29 @@ fn when_text(iso: &str) -> String {
 
 // ---------- the dialogs ----------
 
-fn account_window(_app: &mut BimApp, ctx: &Context) {
+fn primary(ui: &mut Ui, enabled: bool, label: &str) -> bool {
+    let b = egui::Button::new(RichText::new(label).strong().color(egui::Color32::WHITE)).fill(pal().accent);
+    ui.add_enabled(enabled, b).clicked()
+}
+
+fn busy_line(ui: &mut Ui) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(t("Talking to the cloud…"));
+    });
+}
+
+fn account_window(ctx: &Context) {
     let Some(mut d) = with(|c| c.account.take()) else { return };
     let mut close = false;
     let mut submit = false;
-    let title = t("CampusBIM account");
-    let r = crate::popup::Modal::new(Id::new("cloud-account"), title).width(400.0).show(ctx, |ui| {
+    let r = crate::popup::Modal::new(Id::new("cloud-account"), t("CampusBIM account")).width(400.0).show(ctx, |ui| {
         crate::popup::body(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!d.busy, |ui| {
-                    if ui.selectable_label(d.mode == Mode::SignIn, t("Sign in")).clicked() {
+                    if ui.selectable_label(d.mode != Mode::SignUp, t("Sign in")).clicked() {
                         d.mode = Mode::SignIn;
                         d.error = None;
                     }
@@ -682,6 +1005,7 @@ fn account_window(_app: &mut BimApp, ctx: &Context) {
                 RichText::new(t(match d.mode {
                     Mode::SignIn => "Sign in to save projects to the cloud and open them on any computer.",
                     Mode::SignUp => "Make a free account with your email and a password of at least 6 characters.",
+                    Mode::Reset => "Type your account's email and we'll send a link to set a new password.",
                 }))
                 .color(pal().muted),
             );
@@ -689,12 +1013,37 @@ fn account_window(_app: &mut BimApp, ctx: &Context) {
             ui.label(t("Email"));
             let email =
                 ui.add_enabled(!d.busy, TextEdit::singleline(&mut d.email).hint_text("you@school.edu.ng").desired_width(f32::INFINITY));
-            ui.add_space(4.0);
-            ui.label(t("Password"));
-            let pass = ui.add_enabled(!d.busy, TextEdit::singleline(&mut d.password).password(true).desired_width(f32::INFINITY));
-            if (email.lost_focus() || pass.lost_focus()) && ui.input(|i| i.key_pressed(Key::Enter)) {
-                submit = true;
+            let mut enter = email.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            // Typing goes to a field, never to the window's shortcuts behind the dialog.
+            let unfocused = !d.busy && ui.memory(|m| m.focused().is_none());
+            if d.mode != Mode::Reset {
+                ui.add_space(4.0);
+                ui.label(t("Password"));
+                let pass = ui.add_enabled(!d.busy, TextEdit::singleline(&mut d.password).password(true).desired_width(f32::INFINITY));
+                enter |= pass.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                if unfocused && !d.email.trim().is_empty() && !enter {
+                    pass.request_focus();
+                }
             }
+            if unfocused && (d.email.trim().is_empty() || d.mode == Mode::Reset) && !enter {
+                email.request_focus();
+            }
+            if d.mode == Mode::SignIn {
+                ui.add_space(2.0);
+                if ui.add_enabled(!d.busy, egui::Link::new(t("Forgot password?"))).clicked() {
+                    d.mode = Mode::Reset;
+                    d.error = None;
+                    d.info = None;
+                }
+            } else if d.mode == Mode::Reset {
+                ui.add_space(2.0);
+                if ui.add_enabled(!d.busy, egui::Link::new(t("Back to sign in"))).clicked() {
+                    d.mode = Mode::SignIn;
+                    d.error = None;
+                    d.info = None;
+                }
+            }
+            submit |= enter;
             if let Some(e) = &d.error {
                 ui.add_space(6.0);
                 ui.colored_label(pal().error, e);
@@ -704,11 +1053,7 @@ fn account_window(_app: &mut BimApp, ctx: &Context) {
                 ui.colored_label(pal().accent, i);
             }
             if d.busy {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(t("Talking to the cloud…"));
-                });
+                busy_line(ui);
             }
         });
         crate::popup::footer(ui, |ui| {
@@ -716,10 +1061,9 @@ fn account_window(_app: &mut BimApp, ctx: &Context) {
                 let label = t(match d.mode {
                     Mode::SignIn => "Sign in",
                     Mode::SignUp => "Create account",
+                    Mode::Reset => "Send reset link",
                 });
-                if ui.add_enabled(!d.busy, egui::Button::new(RichText::new(label).strong())).clicked() {
-                    submit = true;
-                }
+                submit |= primary(ui, !d.busy, label);
                 if ui.button(t("Cancel")).clicked() {
                     close = true;
                 }
@@ -730,13 +1074,18 @@ fn account_window(_app: &mut BimApp, ctx: &Context) {
         let email = d.email.trim().to_owned();
         if !email.contains('@') || email.len() > 320 {
             d.error = Some(t("Type the email address of the account.").to_owned());
-        } else if d.password.chars().count() < 6 {
+        } else if d.mode != Mode::Reset && d.password.chars().count() < 6 {
             d.error = Some(t("The password needs at least 6 characters.").to_owned());
         } else {
             d.busy = true;
             d.error = None;
             d.info = None;
-            spawn_sign_in(email, d.password.clone(), d.mode);
+            let mode = d.mode;
+            let password = d.password.clone();
+            match mode {
+                Mode::Reset => spawn(async move { Event::ResetSent(send_reset(email).await) }),
+                _ => spawn(async move { Event::SignedIn(sign_in(email, password, mode).await) }),
+            }
         }
     }
     if close || (r.should_close() && !d.busy) {
@@ -746,132 +1095,359 @@ fn account_window(_app: &mut BimApp, ctx: &Context) {
     with(|c| c.account = Some(d));
 }
 
-fn projects_window(app: &mut BimApp, ctx: &Context) {
-    let Some(mut d) = with(|c| c.projects.take()) else { return };
-    let current = with(|c| c.current.as_ref().map(|(id, _, _)| id.clone()));
-    let saving = with(|c| c.saving.is_some());
-    let (mut close, mut reload, mut save) = (false, false, false);
-    let mut open: Option<Row> = None;
-    let mut remove: Option<Row> = None;
-    let dirty = app.dirty();
-    let r = crate::popup::Modal::new(Id::new("cloud-projects"), t("My Projects")).width(560.0).show(ctx, |ui| {
+fn password_window(ctx: &Context) {
+    let Some(mut d) = with(|c| c.password.take()) else { return };
+    let (mut close, mut submit) = (false, false);
+    let title = t(if d.recovery { "Set new password" } else { "Change password" });
+    let r = crate::popup::Modal::new(Id::new("cloud-password"), title).width(400.0).closable(!d.recovery || !d.busy).show(ctx, |ui| {
         crate::popup::body(ui, |ui| {
+            ui.add_space(4.0);
             if let Some(email) = signed_in_email() {
-                ui.label(RichText::new(format!("{} {email}", t("Signed in as"))).color(pal().muted));
+                ui.label(RichText::new(email).color(pal().muted));
+                ui.add_space(6.0);
             }
-            ui.add_space(6.0);
+            ui.label(t("New password"));
+            let a = ui.add_enabled(!d.busy, TextEdit::singleline(&mut d.password).password(true).desired_width(f32::INFINITY));
+            ui.add_space(4.0);
+            ui.label(t("Type it again"));
+            let b = ui.add_enabled(!d.busy, TextEdit::singleline(&mut d.again).password(true).desired_width(f32::INFINITY));
+            submit |= (a.lost_focus() || b.lost_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
+            if !d.busy && !submit && ui.memory(|m| m.focused().is_none()) {
+                if d.password.is_empty() { a.request_focus() } else { b.request_focus() }
+            }
             if let Some(e) = &d.error {
+                ui.add_space(6.0);
                 ui.colored_label(pal().error, e);
-                ui.add_space(6.0);
             }
-            match &d.rows {
-                None => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t("Loading your projects…"));
-                    });
-                }
-                Some(rows) if rows.is_empty() => {
-                    ui.label(t("No projects in the cloud yet. Save to Cloud keeps the project on screen here."));
-                }
-                Some(rows) => {
-                    if dirty {
-                        ui.label(
-                            RichText::new(t("Opening a project replaces the one on screen, and its unsaved changes.")).color(pal().muted),
-                        );
-                        ui.add_space(4.0);
-                    }
-                    ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        egui::Grid::new("cloud-projects-grid").num_columns(4).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
-                            ui.label(RichText::new(t("Name")).strong());
-                            ui.label(RichText::new(t("Saved")).strong());
-                            ui.label(RichText::new(t("Size")).strong());
-                            ui.label("");
-                            ui.end_row();
-                            for row in rows {
-                                let mut name = RichText::new(&row.name);
-                                if current.as_deref() == Some(row.id.as_str()) {
-                                    name = name.strong().color(pal().accent);
-                                }
-                                ui.label(name);
-                                ui.label(when_text(&row.updated_at));
-                                ui.label(size_text(row.size));
-                                ui.horizontal(|ui| {
-                                    ui.add_enabled_ui(!d.busy, |ui| {
-                                        if d.confirm.as_deref() == Some(row.id.as_str()) {
-                                            ui.colored_label(pal().error, t("Delete?"));
-                                            if ui.button(t("Yes")).clicked() {
-                                                remove = Some(row.clone());
-                                            }
-                                            if ui.button(t("No")).clicked() {
-                                                d.confirm = None;
-                                            }
-                                        } else {
-                                            if ui.button(t("Open")).clicked() {
-                                                open = Some(row.clone());
-                                            }
-                                            if ui.button(t("Delete")).clicked() {
-                                                d.confirm = Some(row.id.clone());
-                                            }
-                                        }
-                                    });
-                                });
-                                ui.end_row();
-                            }
-                        });
-                    });
-                }
-            }
-            if d.busy && d.rows.is_some() {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(t("Talking to the cloud…"));
-                });
+            if d.busy {
+                busy_line(ui);
             }
         });
         crate::popup::footer(ui, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if ui.button(t("Close")).clicked() {
+                submit |= primary(ui, !d.busy, t("Save password"));
+                if ui.button(t("Cancel")).clicked() {
                     close = true;
-                }
-                if ui.add_enabled(!saving, egui::Button::new(t("Save Current to Cloud"))).clicked() {
-                    save = true;
-                }
-                if ui.add_enabled(!d.busy, egui::Button::new(t("Refresh"))).clicked() {
-                    reload = true;
                 }
             });
         });
     });
+    if submit && !d.busy {
+        if d.password.chars().count() < 6 {
+            d.error = Some(t("The password needs at least 6 characters.").to_owned());
+        } else if d.password != d.again {
+            d.error = Some(t("The two passwords are different.").to_owned());
+        } else if with(|c| c.auth.is_none()) {
+            d.error = Some(t("Sign in first.").to_owned());
+        } else {
+            d.busy = true;
+            d.error = None;
+            let password = d.password.clone();
+            spawn(async move { Event::PasswordSet(set_password(password).await) });
+        }
+    }
+    if close || (r.should_close() && !d.busy) {
+        return;
+    }
+    with(|c| c.password = Some(d));
+}
+
+fn rename_window(ctx: &Context) {
+    let Some((id, mut name)) = with(|c| c.renaming.take()) else { return };
+    let (mut close, mut submit) = (false, false);
+    let r = crate::popup::Modal::new(Id::new("cloud-rename"), t("Rename project")).width(380.0).show(ctx, |ui| {
+        crate::popup::body(ui, |ui| {
+            ui.add_space(4.0);
+            ui.label(t("Name"));
+            let field = ui.add(TextEdit::singleline(&mut name).desired_width(f32::INFINITY).char_limit(200));
+            if !field.has_focus() && !field.lost_focus() && ui.memory(|m| m.focused().is_none()) {
+                field.request_focus();
+            }
+            submit |= field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        });
+        crate::popup::footer(ui, |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                submit |= primary(ui, !name.trim().is_empty(), t("Rename"));
+                if ui.button(t("Cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+    });
+    if submit && !name.trim().is_empty() {
+        let name = name.trim().to_owned();
+        with(|c| c.working = Some(id.clone()));
+        spawn(async move { Event::Renamed(rename(id, name).await) });
+        return;
+    }
     if close || r.should_close() {
         return;
     }
-    if let Some(row) = open {
-        d.busy = true;
-        d.error = None;
-        wasm_bindgen_futures::spawn_local(async move { push(Event::Opened(download(row).await)) });
+    with(|c| c.renaming = Some((id, name)));
+}
+
+fn delete_window(ctx: &Context) {
+    let Some(row) = with(|c| c.deleting.take()) else { return };
+    let (mut close, mut yes) = (false, false);
+    let r = crate::popup::Modal::new(Id::new("cloud-delete"), t("Delete project?")).width(400.0).show(ctx, |ui| {
+        crate::popup::body(ui, |ui| {
+            ui.add_space(4.0);
+            ui.label(RichText::new(&row.name).strong());
+            ui.add_space(4.0);
+            ui.label(t("This deletes the project and its picture from the cloud. It can't be undone."));
+        });
+        crate::popup::footer(ui, |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                let b = egui::Button::new(RichText::new(t("Delete")).strong().color(egui::Color32::WHITE)).fill(pal().error);
+                yes = ui.add(b).clicked();
+                if ui.button(t("Cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+    });
+    if yes {
+        with(|c| c.working = Some(row.id.clone()));
+        spawn(async move { Event::Deleted(delete(row).await) });
+        return;
     }
-    if let Some(row) = remove {
-        d.busy = true;
-        d.error = None;
-        d.confirm = None;
-        wasm_bindgen_futures::spawn_local(async move { push(Event::Deleted(delete(row).await)) });
+    if close || r.should_close() {
+        return;
     }
-    with(|c| {
-        if c.projects.is_none() {
-            c.projects = Some(d);
+    with(|c| c.deleting = Some(row));
+}
+
+// ---------- the dashboard ----------
+
+const CARD: f32 = 232.0;
+const CARD_PIC: f32 = 145.0;
+const CARD_GAP: f32 = 18.0;
+
+/// The start page's right side in the browser: the signed-in user's cloud projects as cards, or a prompt to sign in.
+pub(crate) fn dashboard(app: &BimApp, ui: &mut Ui) -> Option<DashClick> {
+    let Some(email) = signed_in_email() else {
+        signed_out_prompt(ui);
+        return None;
+    };
+    let _ = app;
+    let mut click = None;
+    crate::start::heading(ui, "Your cloud projects");
+    ui.horizontal(|ui| {
+        let mut search = with(|c| c.search.clone());
+        let field = TextEdit::singleline(&mut search).hint_text(t("Search projects")).desired_width(220.0);
+        if ui.add(field).changed() {
+            with(|c| c.search.clone_from(&search));
+        }
+        if ui.button(t("New project")).clicked() {
+            click = Some(DashClick::New);
+        }
+        if ui.button(t("Open file…")).clicked() {
+            click = Some(DashClick::Open);
+        }
+        let listing = with(|c| c.listing);
+        if ui.add_enabled(!listing, egui::Button::new(t("Refresh"))).clicked() {
+            refresh_list();
+        }
+        if listing {
+            ui.spinner();
         }
     });
-    if reload {
-        spawn_list();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{} {email}", t("Signed in as"))).size(12.0).color(pal().muted));
+    });
+    ui.add_space(12.0);
+    if let Some(e) = with(|c| c.list_error.clone()) {
+        ui.colored_label(pal().error, e);
+        ui.add_space(8.0);
     }
-    if save {
-        save_to_cloud(app);
+    let (rows, search) = with(|c| (c.rows.clone(), c.search.trim().to_lowercase()));
+    let Some(rows) = rows else {
+        if !with(|c| c.listing) {
+            refresh_list();
+        }
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(t("Loading your projects…"));
+        });
+        return click;
+    };
+    let shown: Vec<&Row> = rows.iter().filter(|r| search.is_empty() || r.name.to_lowercase().contains(&search)).collect();
+    if shown.is_empty() {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
+        crate::start::dashed(ui, rect.shrink(1.0));
+        let inner = egui::Rect::from_center_size(rect.center(), vec2(rect.width(), 48.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Center)), |ui| {
+            if rows.is_empty() {
+                ui.label(RichText::new(t("No cloud projects yet")).size(15.0).color(pal().text));
+                ui.label(
+                    RichText::new(t("Open or start a project, then File > Save to Cloud keeps it here.")).size(13.0).color(pal().muted),
+                );
+            } else {
+                ui.label(RichText::new(t("No projects match the search")).size(15.0).color(pal().text));
+            }
+        });
+        return click;
+    }
+    let working = with(|c| c.working.clone());
+    let current = with(|c| c.current.as_ref().map(|(id, _, _)| id.clone()));
+    let width = ui.available_width();
+    let per_row = (((width + CARD_GAP) / (CARD + CARD_GAP)).floor() as usize).max(1);
+    for chunk in shown.chunks(per_row) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = CARD_GAP;
+            for row in chunk {
+                card(ui, row, working.as_deref(), current.as_deref() == Some(row.id.as_str()));
+            }
+        });
+        ui.add_space(CARD_GAP);
+    }
+    click
+}
+
+fn signed_out_prompt(ui: &mut Ui) {
+    crate::start::heading(ui, "Cloud projects");
+    let frame = egui::Frame::new()
+        .fill(pal().surface)
+        .stroke(egui::Stroke::new(1.0, pal().border))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(18));
+    frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(t("Sign in to see your cloud projects")).size(16.0).strong().color(pal().text));
+        ui.add_space(4.0);
+        ui.label(RichText::new(t("Save projects to your free CampusBIM account and open them on any computer.")).color(pal().muted));
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if primary(ui, true, t("Sign in")) {
+                open_account(Mode::SignIn);
+            }
+            if ui.button(t("Create account")).clicked() {
+                open_account(Mode::SignUp);
+            }
+        });
+    });
+}
+
+/// One cloud project: its picture, name, when it was last saved and its size; a click opens it, its ⋯ menu renames,
+/// duplicates and deletes it.
+fn card(ui: &mut Ui, row: &Row, working: Option<&str>, current: bool) {
+    use egui::{Align2, CornerRadius, FontId, Rect, Stroke, StrokeKind, epaint::Shadow, pos2};
+    let busy = working.is_some();
+    let (rect, r) = ui.allocate_exact_size(vec2(CARD, CARD_PIC + 62.0), if busy { Sense::hover() } else { Sense::click() });
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !busy, &row.name));
+    let hot = !busy && (r.hovered() || r.has_focus());
+    let rect = if hot { rect.translate(vec2(0.0, -2.0)) } else { rect };
+    let round = CornerRadius::same(12);
+    {
+        let p = ui.painter();
+        let shadow =
+            Shadow { offset: [0, if hot { 8 } else { 3 }], blur: if hot { 22 } else { 10 }, spread: 0, color: crate::start::shade(hot) };
+        p.add(shadow.as_shape(rect, round));
+        let edge = if hot || current { pal().accent } else { pal().border };
+        p.rect(rect, round, pal().surface, Stroke::new(if hot || current { 1.5 } else { 1.0 }, edge), StrokeKind::Inside);
+    }
+    let pic = Rect::from_min_size(rect.min + vec2(1.0, 1.0), vec2(CARD - 2.0, CARD_PIC));
+    let pic_round = CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 };
+    let thumb = thumb_for(row);
+    match thumb {
+        Some(tex) => {
+            ui.painter().rect_filled(pic, pic_round, egui::Color32::WHITE);
+            // Fill the card's picture, cropping the drawing's sides or top to keep its shape.
+            let [w, h] = tex.size().map(|v| v as f32);
+            let (tw, th) = (pic.width(), pic.height());
+            let scale = (tw / w).max(th / h);
+            let (cw, ch) = (tw / scale / w, th / scale / h);
+            let uv = Rect::from_min_size(pos2((1.0 - cw) / 2.0, (1.0 - ch) / 2.0), vec2(cw, ch));
+            egui::Image::new((tex.id(), pic.size())).uv(uv).corner_radius(pic_round).paint_at(ui, pic);
+        }
+        None => {
+            let p = ui.painter();
+            let tint = if crate::style::dark() { pal().bar } else { pal().hover_fill };
+            p.rect_filled(pic, pic_round, tint);
+            let icon = Rect::from_center_size(pic.center() - vec2(0.0, 6.0), vec2(40.0, 40.0));
+            crate::icons::paint(p, crate::icons::Icon::Plan, icon, pal().muted);
+            let note = if row.thumb.is_some() && with(|c| matches!(c.thumbs.get(&row.id), Some((_, Thumb::Loading)))) {
+                t("Loading picture…")
+            } else {
+                t("No picture yet")
+            };
+            p.text(pic.center() + vec2(0.0, 30.0), Align2::CENTER_CENTER, note, FontId::proportional(12.0), pal().muted);
+        }
+    }
+    let p = ui.painter();
+    p.line_segment([pic.left_bottom(), pic.right_bottom()], Stroke::new(1.0, pal().border));
+    let text_at = pos2(rect.left() + 14.0, pic.bottom() + 12.0);
+    let clip = Rect::from_min_max(text_at, pos2(rect.right() - 40.0, rect.bottom()));
+    let pc = p.with_clip_rect(clip);
+    pc.text(text_at, Align2::LEFT_TOP, &row.name, FontId::proportional(14.5), pal().text);
+    let detail = format!("{} · {}", when_text(&row.updated_at), size_text(row.size));
+    pc.text(text_at + vec2(0.0, 22.0), Align2::LEFT_TOP, detail, FontId::proportional(12.0), pal().muted);
+    if working == Some(row.id.as_str()) {
+        let at = Rect::from_center_size(pic.center(), vec2(28.0, 28.0));
+        ui.put(at, egui::Spinner::new().size(24.0));
+    }
+    // The ⋯ menu, at the bottom right.
+    let dots = Rect::from_min_size(pos2(rect.right() - 36.0, pic.bottom() + 14.0), vec2(28.0, 28.0));
+    let menu = ui.interact(dots, Id::new(("cloud-card-menu", &row.id)), if busy { Sense::hover() } else { Sense::click() });
+    menu.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !busy, t("Project menu")));
+    if menu.hovered() {
+        ui.painter().rect_filled(dots, 6.0, pal().hover_fill);
+    }
+    for dx in [-6.0, 0.0, 6.0] {
+        ui.painter().circle_filled(dots.center() + vec2(dx, 0.0), 1.8, if menu.hovered() { pal().text } else { pal().muted });
+    }
+    let menu = menu.on_hover_text(t("Rename, duplicate or delete"));
+    let mut open = !busy && r.clicked();
+    let items = |ui: &mut Ui, open: &mut bool| {
+        if ui.button(t("Open")).clicked() {
+            *open = true;
+        }
+        if ui.button(t("Rename…")).clicked() {
+            with(|c| c.renaming = Some((row.id.clone(), row.name.clone())));
+        }
+        if ui.button(t("Duplicate")).clicked() {
+            let (copy, id) = (row.clone(), new_id());
+            with(|c| c.working = Some(row.id.clone()));
+            spawn(async move { Event::Duplicated(duplicate(copy, id).await) });
+        }
+        if ui.button(RichText::new(t("Delete…")).color(pal().error)).clicked() {
+            with(|c| c.deleting = Some(row.clone()));
+        }
+    };
+    if !busy {
+        egui::Popup::menu(&menu).show(|ui| items(ui, &mut open));
+        r.context_menu(|ui| items(ui, &mut open));
+    }
+    if open {
+        let row = row.clone();
+        with(|c| c.working = Some(row.id.clone()));
+        spawn(async move { Event::Opened(download(row).await) });
     }
 }
 
-/// The account's chip on the app bar: "Sign in", or the email with a menu of the cloud's commands.
+/// The card's picture when it's in; starts fetching it the first time.
+fn thumb_for(row: &Row) -> Option<egui::TextureHandle> {
+    let path = row.thumb.clone()?;
+    let start = with(|c| match c.thumbs.get(&row.id) {
+        Some((stamp, Thumb::Ready(tex))) if *stamp == row.updated_at => Err(Some(tex.clone())),
+        Some((stamp, _)) if *stamp == row.updated_at => Err(None),
+        _ => {
+            c.thumbs.insert(row.id.clone(), (row.updated_at.clone(), Thumb::Loading));
+            Ok(())
+        }
+    });
+    match start {
+        Err(tex) => tex,
+        Ok(()) => {
+            let id = row.id.clone();
+            spawn(async move { Event::ThumbLoaded(id, get_object(&path).await.ok()) });
+            None
+        }
+    }
+}
+
+/// The account's chip on the app bar: "Sign in", or the email with a menu of the cloud's commands. `at` is what's to its
+/// right; the chip's own rect is returned.
 pub(crate) fn account_chip(app: &mut BimApp, ui: &mut Ui, at: egui::Rect) -> egui::Rect {
     let email = signed_in_email();
     let label = match &email {
@@ -905,17 +1481,21 @@ pub(crate) fn account_chip(app: &mut BimApp, ui: &mut Ui, at: egui::Rect) -> egu
     rect
 }
 
-/// File menu items: Save to Cloud, My Projects, and signing in or out.
+/// File menu items: Save to Cloud, My Projects, and the account's.
 pub(crate) fn cloud_items(app: &mut BimApp, ui: &mut Ui) {
     if ui.button(t("Save to Cloud")).clicked() {
         save_to_cloud(app);
         ui.close();
     }
     if ui.button(t("My Projects…")).clicked() {
-        open_projects();
+        open_projects(app);
         ui.close();
     }
     if signed_in_email().is_some() {
+        if ui.button(t("Change Password…")).clicked() {
+            open_password(false);
+            ui.close();
+        }
         if ui.button(t("Sign Out")).clicked() {
             sign_out(app);
             ui.close();
