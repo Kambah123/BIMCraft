@@ -9,8 +9,9 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.90"
 
 [workspace.dependencies]
-# GUIDs: the system's random numbers.
-getrandom = "0.3"
+# GUIDs: the system's random numbers. wasm_js is unused on native builds: the rustc cfg that
+# selects that backend is set only for wasm32-unknown-unknown (.cargo/config.toml).
+getrandom = { version = "0.3", features = ["wasm_js"] }
 tempfile = "3"
 rayon = "1.12"
 bimcraft-core = { path = "crates/core" }
