@@ -10,6 +10,9 @@ use bimcraft_i18n::msg;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+#[cfg(not(feature = "native-services"))]
+use crate::wasm_shims::bimcraft_update::{Note, State};
+#[cfg(feature = "native-services")]
 use bimcraft_update::{Note, State};
 use egui::{Button, Color32, Context, Frame, Id, OpenUrl, ProgressBar, RichText, Stroke, Ui, ViewportCommand, vec2};
 

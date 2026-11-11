@@ -468,6 +468,9 @@ dependencies = [
  "fmv-macos-events",
  "rfd",
  "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -505,6 +508,7 @@ dependencies = [
  "tempfile",
  "tiny-skia",
  "ttf-parser",
+ "web-time",
  "zune-jpeg",
 ]
 
@@ -575,6 +579,7 @@ dependencies = [
  "serde_json",
  "sys-locale",
  "tempfile",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

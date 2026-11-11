@@ -1679,7 +1679,7 @@ pub fn export(m: &Model) -> String {
         w.define(project, PHASING, &props, (PHASED, PHASED_DEFINES), 0);
     }
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let now = crate::time::SystemTime::now().duration_since(crate::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let app = s(&format!("BIMCraft {}", env!("CARGO_PKG_VERSION")));
     format!(
         "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [DesignTransferView]'),'2;1');\n\

@@ -17,9 +17,9 @@
 
 mod descriptor;
 
+use bimcraft_core::time::{Duration, Instant};
 use std::io::Write as _;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 use bimcraft_core::view3d::Camera;
 

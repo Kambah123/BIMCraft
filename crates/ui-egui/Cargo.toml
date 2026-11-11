@@ -10,12 +10,17 @@ rust-version = "1.95"
 [lints]
 workspace = true
 
+[features]
+default = ["native-services"]
+# Desktop updater and AI assistant (ureq + rustls + ring). Off for wasm.
+native-services = ["dep:bimcraft-update", "dep:bimcraft-assistant"]
+
 [dependencies]
 bimcraft-i18n = { workspace = true }
 bimcraft-core = { workspace = true }
 bimcraft-plugin = { workspace = true }
-bimcraft-update = { workspace = true }
-bimcraft-assistant = { workspace = true }
+bimcraft-update = { workspace = true, optional = true }
+bimcraft-assistant = { workspace = true, optional = true }
 serde_json = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
@@ -24,6 +29,10 @@ rayon = { workspace = true }
 bytemuck = "1"
 rfd = { workspace = true }
 sys-locale = { workspace = true }
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
 
 # The 3D mouse (`spacemouse.rs`), read from its HID reports through hidapi's own Windows backend: pure Rust, MIT.
 [target.'cfg(windows)'.dependencies]

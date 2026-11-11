@@ -4,9 +4,9 @@ use crate::popup::Modal;
 
 use bimcraft_i18n::msg;
 
+use bimcraft_core::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
 
 use bimcraft_core::autosave::{Backup, Notice, Worker, backup_path};
 use bimcraft_core::ids::Guid;

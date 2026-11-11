@@ -13,7 +13,13 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
+#[cfg(not(feature = "native-services"))]
+use crate::wasm_shims::bimcraft_assistant::net::Net;
+#[cfg(not(feature = "native-services"))]
+use crate::wasm_shims::bimcraft_assistant::{Chat, Line, Provider, key_ok, model_ok, seal};
+#[cfg(feature = "native-services")]
 use bimcraft_assistant::net::Net;
+#[cfg(feature = "native-services")]
 use bimcraft_assistant::{Chat, Line, Provider, key_ok, model_ok, seal};
 use bimcraft_core::bridge::Access;
 use bimcraft_i18n::msg;
@@ -435,5 +441,16 @@ fn log_line(ui: &mut Ui, line: &Line) {
 
 /// Names the palette and its choices for Undo's list: an undo step the assistant made, `Assistant: <what was asked>`.
 pub(crate) fn step_label(label: &str) -> Option<String> {
-    label.strip_prefix(&format!("{}: ", bimcraft_assistant::LABEL)).map(|asked| tf(msg!("Assistant: {}"), &[asked]))
+    label
+        .strip_prefix(&format!("{}: ", {
+            #[cfg(feature = "native-services")]
+            {
+                bimcraft_assistant::LABEL
+            }
+            #[cfg(not(feature = "native-services"))]
+            {
+                crate::wasm_shims::bimcraft_assistant::LABEL
+            }
+        }))
+        .map(|asked| tf(msg!("Assistant: {}"), &[asked]))
 }

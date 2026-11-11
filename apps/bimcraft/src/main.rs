@@ -3,21 +3,35 @@
 // A release build on Windows is a window, not a console program: no console opens behind it.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_i18n::ui_msg;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
 
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_core::cad::DwgReader;
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_core::engine::Session;
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_core::sample::SAMPLE;
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_ui_egui::control::Control;
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_ui_egui::revit::{Importer, is_revit};
+#[cfg(not(target_arch = "wasm32"))]
 use bimcraft_ui_egui::{BimApp, Status, lang};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::json;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod startup;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
+#[cfg(not(target_arch = "wasm32"))]
 const USAGE: &str = "USAGE: bimcraft [FILE] [--sample | --highrise | --tower] [--control PORT]
   FILE       a .bimcraft project to open, or an .ifc or .rvt (Revit) file to import
   --sample   start on the sample house
@@ -33,9 +47,11 @@ Set BIMCRAFT_NO_UPDATE_CHECK=1 and it never makes a request.";
 
 /// What the desktop knows the app by: Wayland's app id and X11's window class, which a Linux desktop
 /// matches to the `.desktop` file of that name for the window's icon, and the macOS bundle's identifier.
+#[cfg(not(target_arch = "wasm32"))]
 const APP_ID: &str = "io.github.ipedrax.bimcraft";
 
 /// The arguments without `--control PORT`, and the port it names: a number, 0 for one that is free.
+#[cfg(not(target_arch = "wasm32"))]
 fn control_port(mut args: Vec<String>) -> Result<(Vec<String>, Option<u16>), String> {
     let Some(at) = args.iter().position(|a| a == "--control") else { return Ok((args, None)) };
     args.remove(at);
@@ -44,8 +60,15 @@ fn control_port(mut args: Vec<String>) -> Result<(Vec<String>, Option<u16>), Str
     Ok((args, Some(port)))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    web::start();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     // An update runs the installer from a copy of this program, once the app has exited: nothing else here applies to it.
+    #[cfg(feature = "native-services")]
     if let Some(finish) = bimcraft_update::install::parse(std::env::args_os().skip(1)) {
         return bimcraft_update::install::run(&finish);
     }
@@ -84,7 +107,10 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "-V" | "--version" => {
+                #[cfg(feature = "native-services")]
                 println!("{}", bimcraft_update::version_line(env!("CARGO_PKG_VERSION")));
+                #[cfg(not(feature = "native-services"))]
+                println!("BIMCraft {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
             }
             "--sample" => session.script(SAMPLE).map(|_| ()),
@@ -211,13 +237,16 @@ fn main() -> ExitCode {
         }
         let ctx = cc.egui_ctx.clone();
         // The settings sit beside the favorites, in the folder the core finds for the user's own files.
-        let prefs = bimcraft_core::favorites::default_path().map(|path| bimcraft_update::prefs::beside(&path));
-        app.updates = bimcraft_update::Updater::desktop(prefs, move || ctx.request_repaint());
-        if let Some(updates) = app.updates.as_mut() {
-            updates.check_at_startup();
+        #[cfg(feature = "native-services")]
+        {
+            let prefs = bimcraft_core::favorites::default_path().map(|path| bimcraft_update::prefs::beside(&path));
+            app.updates = bimcraft_update::Updater::desktop(prefs, move || ctx.request_repaint());
+            if let Some(updates) = app.updates.as_mut() {
+                updates.check_at_startup();
+            }
+            // The assistant reaches the network only when the user gives it a key and sends a message (`bimcraft-assistant`).
+            app.assistant.attach(std::sync::Arc::new(bimcraft_assistant::net::Ureq::new()));
         }
-        // The assistant reaches the network only when the user gives it a key and sends a message (`bimcraft-assistant`).
-        app.assistant.attach(std::sync::Arc::new(bimcraft_assistant::net::Ureq::new()));
         // The 3D mouse is read on a thread of its own too, which wakes the window as its cap moves.
         let ctx = cc.egui_ctx.clone();
         app.space_mouse = bimcraft_ui_egui::spacemouse::SpaceMouse::start(move || ctx.request_repaint());
@@ -241,30 +270,30 @@ fn main() -> ExitCode {
 
 /// The DWG reader a session is given: `bimcraft-dwg`'s, which reads a drawing in a child process of this program, behind the
 /// `dwg` feature. A build without it hands none, and a DWG says to save it as DXF.
-#[cfg(feature = "dwg")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "dwg"))]
 fn dwg_reader() -> Option<DwgReader> {
     bimcraft_dwg::reader()
 }
 
-#[cfg(not(feature = "dwg"))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "dwg")))]
 fn dwg_reader() -> Option<DwgReader> {
     None
 }
 
 /// What this program does when it's started as the child that reads a DWG (`bimcraft_dwg::CHILD_ARG`): none when it isn't.
-#[cfg(feature = "dwg")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "dwg"))]
 fn dwg_child(args: &[String]) -> Option<ExitCode> {
     bimcraft_dwg::child_main(args)
 }
 
-#[cfg(not(feature = "dwg"))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "dwg")))]
 fn dwg_child(_: &[String]) -> Option<ExitCode> {
     None
 }
 
 /// The reader of Revit files the window is given: `bimcraft-rvt`'s, which is Apache-2.0 only (docs/rvt-provenance.md) and so sits
 /// behind the `rvt` feature. A build without it hands the window none, which then offers no `.rvt` and says why when given one.
-#[cfg(feature = "rvt")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "rvt"))]
 fn revit_reader() -> Option<Importer> {
     Some(std::sync::Arc::new(|path: &Path| {
         let stem = path.file_stem().map_or_else(|| ui_msg!("Project").into(), |s| s.to_string_lossy().into_owned());
@@ -272,7 +301,7 @@ fn revit_reader() -> Option<Importer> {
     }))
 }
 
-#[cfg(not(feature = "rvt"))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "rvt")))]
 fn revit_reader() -> Option<Importer> {
     None
 }
@@ -297,8 +326,7 @@ fn apple_events(app: &mut BimApp, ctx: &eframe::egui::Context, inbox: fmv_macos_
     }));
 }
 
-#[cfg(test)]
-#[cfg(feature = "rvt")]
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "rvt"))]
 mod tests {
     use super::*;
 
@@ -333,7 +361,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod control_tests {
     use super::control_port;
 
