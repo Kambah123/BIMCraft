@@ -3,11 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BIMCraft</title>
+    <title>CampusBIM</title>
+    <meta name="description" content="CampusBIM: free BIM for Nigerian architecture students, in the browser. Built on BIMCraft (open source)." />
+    <meta name="theme-color" content="#0a0f0c" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="favicon.ico" sizes="any" />
     <link data-trunk rel="copy-file" href="favicon.svg" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link data-trunk rel="copy-file" href="favicon.ico" />
+    <link data-trunk rel="copy-file" href="apple-touch-icon.png" />
+    <!-- BIMCraft's licence and notices travel with every copy (MIT / Apache-2.0); About links to them. -->
+    <link data-trunk rel="copy-file" href="LICENSE-MIT" />
+    <link data-trunk rel="copy-file" href="LICENSE-APACHE" />
+    <link data-trunk rel="copy-file" href="NOTICE" />
     <style>
       html,
       body {
@@ -17,6 +25,58 @@
         height: 100%;
         background: #1b1b1b;
         overflow: hidden;
+      }
+      #campusbim-loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #0a0f0c;
+        color: #eef3ef;
+        font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+        z-index: 10;
+      }
+      #campusbim-loading .name {
+        font-size: 40px;
+        letter-spacing: -1px;
+        font-weight: 500;
+      }
+      #campusbim-loading .name b {
+        color: #d8f36c;
+        font-weight: 800;
+      }
+      #campusbim-loading .what {
+        color: #9aa79f;
+        font-size: 15px;
+      }
+      #campusbim-loading .bar {
+        width: 160px;
+        height: 3px;
+        border-radius: 2px;
+        background: #1d2a22;
+        overflow: hidden;
+        margin-top: 10px;
+      }
+      #campusbim-loading .bar::after {
+        content: "";
+        display: block;
+        width: 40%;
+        height: 100%;
+        background: #d8f36c;
+        animation: campusbim-slide 1.2s ease-in-out infinite;
+      }
+      @keyframes campusbim-slide {
+        from { transform: translateX(-100%); }
+        to { transform: translateX(250%); }
+      }
+      #campusbim-loading .credit {
+        position: absolute;
+        bottom: 18px;
+        color: #6f7c74;
+        font-size: 12px;
       }
       canvas {
         display: block;
@@ -35,6 +95,22 @@
   </head>
   <body>
     <canvas id="the_canvas_id"></canvas>
+    <!-- Shown while the app downloads and starts; web.rs removes it once the first frame is up. -->
+    <div id="campusbim-loading" role="status" aria-label="Loading CampusBIM">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="96" height="96" aria-hidden="true">
+        <path d="M30 58 V80 Q60 96 90 80 V58 L60 72 Z" fill="#176b4a"/>
+        <path d="M60 22 L108 46 L60 70 L12 46 Z" fill="#0f4d35"/>
+        <path d="M60 22 L108 46 L60 70 L12 46 Z" fill="none" stroke="#d8f36c" stroke-width="3.5" stroke-linejoin="round"/>
+        <path d="M36 34 L84 58 M84 34 L36 58" stroke="#d8f36c" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M60 46 L98 51 V78" fill="none" stroke="#8be8b5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M94 78 h8 l-1 12 h-6 z" fill="#8be8b5"/>
+        <circle cx="60" cy="46" r="3.5" fill="#d8f36c"/>
+      </svg>
+      <div class="name">Campus<b>BIM</b></div>
+      <div class="what">Free BIM for Nigerian architecture students.</div>
+      <div class="bar"></div>
+      <div class="credit">Built on BIMCraft (open source)</div>
+    </div>
     <!-- Hidden picker so a test (and any page script) can setInputFiles and open a project. -->
     <input id="bimcraft-file-input" type="file" accept=".bimcraft,.ifc,.dxf,.ifcZIP" hidden />
   </body>

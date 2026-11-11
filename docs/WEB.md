@@ -157,3 +157,13 @@ message; nothing fails silently or panics:
   recovery code accounts for most of the growth from the previous WebGL-fallback tree.
 
 The updater, the DWG child, the SpaceMouse and the MCP TCP port should stay desktop-only.
+
+## CampusBIM branding (web only)
+
+The web build goes by CampusBIM: `crates/ui-egui/src/brand.rs` (compiled for wasm32 only) draws the grad-cap mark and the
+"Campus**BIM**" wordmark (lime "BIM" on dark, deep green on light, as in the logo files), and holds the tagline, the source link
+(https://github.com/Kambah123/BIMCraft) and the About dialog. `index.html` sets the tab title, the favicons (the CampusBIM
+icon) and a loading screen that `apps/bimcraft/src/web.rs` removes once eframe starts; the tab title then follows the project.
+The footer's "Built on BIMCraft (open source)" opens About (also File > About CampusBIM), which keeps BIMCraft's copyright
+notice and links LICENSE-MIT, LICENSE-APACHE and NOTICE, copied into the site by Trunk. Crates, file formats (`.bimcraft`),
+code identifiers and the desktop app keep the BIMCraft name.
