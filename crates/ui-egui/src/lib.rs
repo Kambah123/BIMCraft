@@ -15,6 +15,8 @@ mod browser;
 mod cad;
 mod camera;
 mod canvas;
+#[cfg(target_arch = "wasm32")]
+mod cloud;
 mod clouds;
 mod context;
 pub mod control;
@@ -1671,6 +1673,8 @@ impl BimApp {
         self.keys(&ctx);
         self.os_requests(&ctx);
         crate::web_files::poll(self, &ctx);
+        #[cfg(target_arch = "wasm32")]
+        crate::cloud::poll(self, &ctx);
         self.dialog_answered();
         self.watch_window(&ctx);
         let view = self.view_title(self.sheet);
@@ -3362,6 +3366,9 @@ impl BimApp {
         let at = Rect::from_min_size(pos2(end - 26.0, row.center().y - 12.0), vec2(26.0, 24.0));
         let palettes = ui.put(at, |ui: &mut Ui| icon_button(ui, Icon::Interface, msg!("Palettes")));
         egui::Popup::menu(&palettes).show(|ui| self.palette_switches(ui));
+        // In the browser, the CampusBIM account sits left of it: Sign in, or the email and the cloud's commands.
+        #[cfg(target_arch = "wasm32")]
+        let at = cloud::account_chip(self, ui, at);
         let right = at.left() - gap;
         let left = row.right() + gap;
         let mut title = egui::text::LayoutJob::simple_singleline(
@@ -3663,6 +3670,12 @@ impl BimApp {
         }
         if item(ui, msg!("Save As…"), Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S))) {
             self.save_as(ctx, None);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            ui.separator();
+            cloud::cloud_items(self, ui);
+            ui.separator();
         }
         if !self.autosave.candidates.is_empty() && item(ui, msg!("Recover Autosave…"), None) {
             self.autosave.show_recovery = true;

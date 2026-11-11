@@ -58,6 +58,11 @@ web-sys = { version = "0.3", features = [
     "EventTarget",
     "Location",
     "console",
+    # Supabase (accounts and cloud save, `cloud.rs`) over the page's own fetch.
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
 ] }
 
 # The 3D mouse (`spacemouse.rs`), read from its HID reports through hidapi's own Windows backend: pure Rust, MIT.

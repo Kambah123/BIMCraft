@@ -74,6 +74,40 @@ A test (or any page script) can open a file by setting `#bimcraft-file-input`, o
 `png`, `svg`, `pdf`, `glb`) encodes and downloads that format. `window.__bimcraftReady` is `true`
 once eframe has started.
 
+## Accounts and cloud save (CampusBIM)
+
+In the browser the app bar has a **Sign in** chip, left of the Palettes button, and File has
+**Save to Cloud**, **My Projects…** and **Sign In… / Sign Out**. This is browser-only
+(`crates/ui-egui/src/cloud.rs`, compiled for `wasm32` only); the desktop app has none of it and
+does not reach the network for it.
+
+- **Accounts.** Email and password, on Supabase Auth (`/auth/v1/signup`, `/auth/v1/token`). The
+  dialog has a Sign in and a Create account tab. If the project asks for email confirmation,
+  sign-up says "Check your email to confirm your account, then sign in" instead of signing in.
+  The session (access and refresh tokens) is kept in `localStorage` under `campusbim.auth` and
+  refreshed about five minutes before it runs out, and again just before any request whose
+  token has under a minute left. Sign Out forgets it and revokes it on the server.
+- **Save to Cloud** encodes the project as on File > Save (`Session::encode("bimcraft")`),
+  uploads it to the private Storage bucket `projects` at `<user id>/<project id>.bimcraft`, and
+  upserts its row in `public.projects` (name, size, path; `updated_at` is set by a trigger).
+  Saving again a project that was saved or opened from the cloud overwrites the same entry. Not
+  signed in, it asks to sign in first and then saves. It marks the project saved.
+- **My Projects** lists the user's projects (newest first) with Open and Delete (Delete asks
+  first). Open downloads the file and opens it through `Session::provide_bytes`, the same path
+  as File > Open; Delete removes the file and the row.
+- **Recovery** (IndexedDB, every 30 seconds) is unchanged and independent of the cloud.
+
+The database (the `projects` table, its Row Level Security and the bucket's policies) is
+`supabase/migrations/20261111000000_projects_and_storage.sql`. Each user reads and writes only their
+own rows and only files under their own `<user id>/` folder; the anonymous role has no access to
+the table. The client talks to Supabase's HTTP APIs with the page's own `fetch` (web-sys), so no
+HTTP client crate is added. The project URL and the publishable key are built in; they are
+public by design. `CAMPUSBIM_SUPABASE_URL` and `CAMPUSBIM_SUPABASE_KEY` at build time point the
+build at another project. Never put a service-role key in the client.
+
+`window.__bimcraftCloud` is a JSON string of the account and cloud state (signed in, email, the
+open cloud project, the last listed projects and the last message; never the tokens), for tests.
+
 ## What does not work yet
 
 These are current limitations, not accidental omissions. Each one is refused with a status-bar
@@ -88,6 +122,8 @@ message; nothing fails silently or panics:
 - **Updates and the assistant.** The desktop updater and the AI chat (`ureq`, rustls, ring) are
   behind the `native-services` feature, which the wasm build turns off. rustls does not compile
   for `wasm32-unknown-unknown` as used here.
+- **Cloud.** One file per project, last save wins: no sharing, no version history, and no
+  live collaboration yet. Password reset and email change are not in the dialog.
 - **The agent port.** The TCP control port (`--control`) assumes a localhost listener.
 - **Background work.** View jobs run on the window's thread (a large model pauses the page while its
   3D scene is built); Revit import on a thread and rayon's render pool do not get threads here.
