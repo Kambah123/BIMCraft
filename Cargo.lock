@@ -466,6 +466,7 @@ dependencies = [
  "bimcraft-update",
  "eframe",
  "fmv-macos-events",
+ "js-sys",
  "rfd",
  "serde_json",
  "wasm-bindgen",
@@ -574,13 +575,16 @@ dependencies = [
  "egui",
  "egui_kittest",
  "hidapi",
+ "js-sys",
  "pollster 1.0.1",
  "rayon",
  "rfd",
  "serde_json",
  "sys-locale",
  "tempfile",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

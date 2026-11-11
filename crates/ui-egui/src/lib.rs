@@ -33,6 +33,7 @@ mod footer;
 mod gpu;
 #[cfg(not(feature = "native-services"))]
 mod wasm_shims;
+pub mod web_files;
 pub use gpu::limits_for;
 mod graphics;
 mod groups;
@@ -1669,6 +1670,7 @@ impl BimApp {
         self.poll_autosave(&ctx);
         self.keys(&ctx);
         self.os_requests(&ctx);
+        crate::web_files::poll(self, &ctx);
         self.dialog_answered();
         self.watch_window(&ctx);
         let view = self.view_title(self.sheet);
@@ -3009,29 +3011,77 @@ impl BimApp {
     pub fn save_to(&mut self, path: &Path) -> bool {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         let file = path.to_string_lossy();
-        if matches!(ext.as_str(), "png" | "svg") {
-            let mut p = json!({"path": file, "width": 1600, "height": 1000});
-            match (self.sheet, self.orbit.camera) {
-                (Sheet::Plan(id) | Sheet::Section(id) | Sheet::Paper(id), _) => p["view"] = json!(id),
-                (Sheet::Ceiling(id), _) => (p["view"], p["ceiling"]) = (json!(id), json!(true)),
-                (Sheet::View3D, camera) => {
-                    p["view"] = json!("{3D}");
-                    if let Some(c) = camera {
-                        (p["azimuth"], p["elevation"]) = (json!(c.azimuth), json!(c.elevation));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = file;
+            return self.save_to_web(path, &ext);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if matches!(ext.as_str(), "png" | "svg") {
+                let mut p = json!({"path": file, "width": 1600, "height": 1000});
+                match (self.sheet, self.orbit.camera) {
+                    (Sheet::Plan(id) | Sheet::Section(id) | Sheet::Paper(id), _) => p["view"] = json!(id),
+                    (Sheet::Ceiling(id), _) => (p["view"], p["ceiling"]) = (json!(id), json!(true)),
+                    (Sheet::View3D, camera) => {
+                        p["view"] = json!("{3D}");
+                        if let Some(c) = camera {
+                            (p["azimuth"], p["elevation"]) = (json!(c.azimuth), json!(c.elevation));
+                        }
                     }
+                    (Sheet::Schedule(_) | Sheet::Table(_), _) => {}
                 }
-                (Sheet::Schedule(_) | Sheet::Table(_), _) => {}
+                return self.run("render", p).is_some();
             }
-            return self.run("render", p).is_some();
+            let saved = self.run("save", json!({"path": file})).is_some();
+            // Exports (IFC, glTF, the sheets' PDF) leave the project unsaved.
+            if saved && !matches!(ext.as_str(), "ifc" | "glb" | "pdf") {
+                self.saved = Arc::clone(&self.session.model);
+                self.note_recent(path);
+                self.autosave_saved();
+            }
+            saved
         }
-        let saved = self.run("save", json!({"path": file})).is_some();
-        // Exports (IFC, glTF, the sheets' PDF) leave the project unsaved.
-        if saved && !matches!(ext.as_str(), "ifc" | "glb" | "pdf") {
-            self.saved = Arc::clone(&self.session.model);
-            self.note_recent(path);
-            self.autosave_saved();
+    }
+
+    /// Encode the project or view in memory and start a download. Native `save_to` is unchanged.
+    #[cfg(target_arch = "wasm32")]
+    fn save_to_web(&mut self, path: &Path, ext: &str) -> bool {
+        let mut p = serde_json::json!({"width": 1600, "height": 1000});
+        match (self.sheet, self.orbit.camera) {
+            (Sheet::Plan(id) | Sheet::Section(id) | Sheet::Paper(id), _) => p["view"] = serde_json::json!(id),
+            (Sheet::Ceiling(id), _) => (p["view"], p["ceiling"]) = (serde_json::json!(id), serde_json::json!(true)),
+            (Sheet::View3D, camera) => {
+                p["view"] = serde_json::json!("{3D}");
+                if let Some(c) = camera {
+                    (p["azimuth"], p["elevation"]) = (serde_json::json!(c.azimuth), serde_json::json!(c.elevation));
+                }
+            }
+            (Sheet::Schedule(_) | Sheet::Table(_), _) => {}
         }
-        saved
+        let format = if ext.is_empty() { "bimcraft" } else { ext };
+        match self.session.encode(format, &p) {
+            Ok((bytes, _reply)) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("project.{format}"));
+                crate::web_files::deliver(&name, bytes, format);
+                if !matches!(format, "ifc" | "glb" | "pdf" | "png" | "svg") {
+                    self.saved = std::sync::Arc::clone(&self.session.model);
+                    // Remember the name so the next File > Save re-downloads without asking.
+                    if self.session.path.is_none() {
+                        self.session.path = Some(path.to_path_buf());
+                    }
+                    self.autosave_saved();
+                }
+                self.status = Status { text: format!("Downloading {name}"), error: false };
+                true
+            }
+            Err(e) => {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::error_1(&format!("bimcraft: export failed: {e}").into());
+                self.status = Status { text: e, error: true };
+                false
+            }
+        }
     }
 
     /// Saves to the project's file, or asks where first. `then` is done once it is saved.
@@ -3180,9 +3230,32 @@ impl BimApp {
                 OsEvent::Quit => self.guard(Pending::Close, ctx),
             }
         }
-        // A file dropped on the window opens as one the system asked for.
-        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        self.opens.extend(dropped);
+        // A file dropped on the window opens as one the system asked for. On the web the drop
+        // has a file name (not a real path) and the bytes are read asynchronously.
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for f in dropped {
+            let path = f.path().to_path_buf();
+            #[cfg(target_arch = "wasm32")]
+            {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+                let ctx = ctx.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match f.bytes_async().await {
+                        Ok(bytes) => {
+                            crate::web_files::queue_file(name, bytes);
+                            ctx.request_repaint();
+                        }
+                        Err(e) => web_sys::console::error_1(&format!("bimcraft: drop failed: {e}").into()),
+                    }
+                });
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if !path.as_os_str().is_empty() {
+                    self.opens.push(path);
+                }
+            }
+        }
         // A Revit file being read holds the files that come meanwhile, which are opened in turn once it is over: the last one wins.
         if !self.importing()
             && let Some(path) = self.opens.pop()
@@ -3583,6 +3656,7 @@ impl BimApp {
         if item(ui, msg!("Open…"), cmd(Key::O)) {
             self.guard(Pending::Open, ctx);
         }
+        #[cfg(not(target_arch = "wasm32"))]
         self.recent_menu(ui, ctx);
         if item(ui, "Save", cmd(Key::S)) {
             self.save(ctx, None);
@@ -5293,14 +5367,30 @@ impl BimApp {
         self.options_window(ctx);
         self.purge_window(ctx);
         if std::mem::take(&mut self.link_dialog) {
-            self.link_model_dialog(ctx);
+            if !self.web_block(
+                "Link Model isn't available in the browser: a link is a path that is read again when the project opens. Open or import the file into this project instead.",
+            ) {
+                self.link_model_dialog(ctx);
+            }
         }
         if std::mem::take(&mut self.cloud_dialog) {
-            self.point_cloud_dialog(ctx);
+            if !self
+                .web_block("Point clouds aren't available in the browser yet: the scan formats are read from a file path on the desktop.")
+            {
+                self.point_cloud_dialog(ctx);
+            }
         }
         self.point_cloud_window(ctx);
         if let Some(link) = self.cad_dialog.take() {
-            self.import_cad_dialog(ctx, link);
+            if link
+                && self.web_block(
+                    "Link CAD isn't available in the browser: a link needs a file path it can read again. Use Import CAD with a DXF, which is stored in the project.",
+                )
+            {
+                // refused
+            } else {
+                self.import_cad_dialog(ctx, link);
+            }
         }
         self.import_cad_window(ctx);
         self.select_by_id_window(ctx);

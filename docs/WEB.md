@@ -39,28 +39,52 @@ wgpu on WebGL once their uniform is a multiple of 16 bytes.
 clocks the core and the UI use go through `bimcraft_core::time` (web-time on wasm) and
 `process_id()` instead.
 
+## Files in the browser
+
+Open, Save, Save As, Import and Export use the browser File API, not `std::fs`. The file picker
+(`rfd`) yields a name and bytes; the core commands (`open`, `import_cad`) accept those bytes when
+they are parked with `Session::provide_bytes`. Saving and exporting encode the project in memory
+(`Session::encode`) and start a download (a Blob and a temporary `<a download>`, or `rfd`'s
+writable handle when Save As used the picker).
+
+What works:
+
+- **Open** a `.bimcraft` project or an **IFC** file (File > Open, or drop the file on the window).
+- **Save** and **Save As** download the project as `.bimcraft`. Save after opening a project
+  re-downloads under the same name; a new or imported-IFC project asks for a name first.
+- **Export** IFC, the current view as PNG, a plan as SVG, the sheets as PDF, and the 3D scene as
+  glTF (`.glb`), same as the desktop File > Export menu.
+- **Import CAD** for a **DXF** (Insert > Import CAD, or drop a `.dxf` on the window). The drawing
+  is stored in the project.
+- **Drag and drop** a `.bimcraft`, `.ifc` or `.dxf` onto the canvas.
+- **Recovery.** About every 30 seconds, if the project has unsaved changes, a copy is written to
+  IndexedDB (and to `localStorage` when it is small enough). On the next visit the window offers
+  to restore it, so a drop in the network does not lose the work.
+
+A test (or any page script) can open a file by setting `#bimcraft-file-input`, or by calling
+`window.__bimcraftQueueFile(name, Uint8Array)`. `window.__bimcraftExport("ifc")` (or `bimcraft`,
+`png`, `svg`, `pdf`, `glb`) encodes and downloads that format. `window.__bimcraftReady` is `true`
+once eframe has started.
+
 ## What does not work yet
 
-These are current limitations, not accidental omissions:
+These are current limitations, not accidental omissions. Each one is refused with a status-bar
+message; nothing fails silently or panics:
 
-- **Files.** Open, Save, Import and Export still talk to a filesystem path. The web file picker
-  compiles, but it only keeps the file's name, not its bytes, and the core still uses `std::fs`.
-  A project cannot actually be opened from or saved to disk in the browser.
+- **DWG.** The DWG reader runs as a child process of the desktop app; it is not in the wasm build.
+  Save the drawing as DXF and import that.
+- **Link CAD and Link Model.** A link is a filesystem path that is read again when the project
+  opens or on Reload. Import the file into the project instead.
+- **Point clouds, Revit (`.rvt` / `.rfa`), plugins from a folder, and recent files.** These
+  assume a local path. Open a `.bimcraft` or IFC, or import a DXF, instead.
 - **Updates and the assistant.** The desktop updater and the AI chat (`ureq`, rustls, ring) are
   behind the `native-services` feature, which the wasm build turns off. rustls does not compile
   for `wasm32-unknown-unknown` as used here.
-- **DWG.** The DWG reader runs in a child process of the desktop app; that path is not in the
-  wasm build (`--no-default-features` also leaves out the Revit reader, though that crate itself
-  type-checks for wasm).
-- **Plugins, autosave, and the agent port.** The plugin folder, autosave and the TCP control port
-  (`--control`) assume a local machine: threads, a writable config directory, and a localhost
-  listener.
+- **The agent port.** The TCP control port (`--control`) assumes a localhost listener.
 - **Background work.** Section and 3D workers, Revit import on a thread, and rayon's render pool
   type-check, but `std::thread` does not do useful work in this wasm target.
-- **Size.** A release `trunk build` of this tree is 36,097,676 bytes (36.1 MB) of Wasm without
-  wasm-opt, and 26,217,934 bytes (26.2 MB) after `wasm-opt -z`. That is still large for a web
-  page (essentially the same as the previous WebGPU-only tree).
+- **Size.** A release `trunk build` of this tree is 38,601,800 bytes (38.6 MB) of Wasm without
+  wasm-opt, and 28,035,288 bytes (28.0 MB) after `wasm-opt -z`. The file I/O, download and
+  recovery code accounts for most of the growth from the previous WebGL-fallback tree.
 
-A later pass needs a real browser file API (bytes into `open` / `save` / IFC import) and a
-smaller download. The updater, the DWG child, the SpaceMouse and the MCP TCP port should stay
-desktop-only.
+The updater, the DWG child, the SpaceMouse and the MCP TCP port should stay desktop-only.

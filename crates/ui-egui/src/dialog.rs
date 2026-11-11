@@ -20,6 +20,7 @@ type DialogFuture = Pin<Box<dyn Future<Output = Option<Vec<rfd::FileHandle>>> + 
 #[cfg(target_arch = "wasm32")]
 type DialogFuture = Pin<Box<dyn Future<Output = Option<Vec<rfd::FileHandle>>>>>;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn handles_to_paths(files: Vec<rfd::FileHandle>) -> Vec<PathBuf> {
     files
         .iter()
@@ -60,6 +61,7 @@ impl BimApp {
         self.begin(
             ctx,
             future,
+            save,
             Box::new(|app, paths| {
                 if let Some(path) = paths.into_iter().next() {
                     then(app, path);
@@ -75,15 +77,15 @@ impl BimApp {
         dialog: rfd::AsyncFileDialog,
         then: impl FnOnce(&mut BimApp, Vec<PathBuf>) + 'static,
     ) {
-        self.begin(ctx, Box::pin(dialog.pick_files()), Box::new(then));
+        self.begin(ctx, Box::pin(dialog.pick_files()), false, Box::new(then));
     }
 
-    fn begin(&mut self, ctx: &Context, future: DialogFuture, then: Then) {
+    fn begin(&mut self, ctx: &Context, future: DialogFuture, save: bool, then: Then) {
         if self.dialog.is_some() {
             return;
         }
         let (tx, answer) = channel();
-        wait(ctx, future, tx);
+        wait(ctx, future, tx, save);
         self.dialog = Some(Dialog { answer, then });
     }
 
@@ -108,7 +110,7 @@ impl BimApp {
 /// thread: on macOS that is where the dialog is begun (its sheet opens at once and does not block), and only waiting for it
 /// is done on the thread.
 #[cfg(all(not(test), not(target_arch = "wasm32")))]
-fn wait(ctx: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>) {
+fn wait(ctx: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>, _save: bool) {
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         let files = pollster::block_on(future);
@@ -119,18 +121,35 @@ fn wait(ctx: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>) {
 
 /// On the web the picker is a non-`Send` future and there are no threads: wait on the page's event loop.
 #[cfg(all(not(test), target_arch = "wasm32"))]
-fn wait(ctx: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>) {
+fn wait(ctx: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>, save: bool) {
     let ctx = ctx.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let files = future.await;
-        let _ = tx.send(files.map(handles_to_paths));
+        let paths = match files {
+            Some(handles) => {
+                let mut paths = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    let path = PathBuf::from(handle.file_name());
+                    if save {
+                        crate::web_files::stash_save_handle(handle);
+                    } else {
+                        let bytes = handle.read().await;
+                        bimcraft_core::bytes_io::provide(&path, bytes);
+                    }
+                    paths.push(path);
+                }
+                Some(paths)
+            }
+            None => None,
+        };
+        let _ = tx.send(paths);
         ctx.request_repaint();
     });
 }
 
 /// A test opens no system dialog: the dialog it begins is answered through `BEGUN`'s sender.
 #[cfg(test)]
-fn wait(_: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>) {
+fn wait(_: &Context, future: DialogFuture, tx: Sender<Option<Vec<PathBuf>>>, _save: bool) {
     drop(future);
     BEGUN.with(|b| b.borrow_mut().push(tx));
 }

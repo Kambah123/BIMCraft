@@ -2949,14 +2949,29 @@ fn with_links(s: &mut Session, mut reply: Value) -> Value {
 fn open_file(s: &mut Session, p: &Value) -> R {
     let c = "open";
     let path = PathBuf::from(string(c, p, "path")?.ok_or_else(|| bad(c, "`path` is required"))?);
-    let size = std::fs::metadata(&path).map_err(|e| bad(c, format!("{}: {e}", path.display())))?.len();
+    let bytes = match crate::bytes_io::take(&path) {
+        Some(b) => b,
+        None => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                return Err(bad(
+                    c,
+                    format!("{}: in the browser, open a file from File > Open or by dropping it on the window", path.display()),
+                ));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                std::fs::read(&path).map_err(|e| bad(c, format!("{}: {e}", path.display())))?
+            }
+        }
+    };
+    let size = bytes.len() as u64;
     let most = max_file(&ext(&path));
     if size >= most {
         return Err(bad(c, format!("{} is too large ({size} bytes; `open` takes one under {most})", path.display())));
     }
     // IFC comes in as a new project: saving it asks where.
     if ext(&path) == "ifc" {
-        let bytes = std::fs::read(&path).map_err(|e| bad(c, format!("{}: {e}", path.display())))?;
         let stem = path.file_stem().map_or_else(|| "Project".into(), |s| s.to_string_lossy().into_owned());
         let file = crate::step::parse(&bytes).map_err(|e| bad(c, format!("{}: {e}", path.display())))?;
         let seed = crate::import::seed(&bytes);
@@ -2979,7 +2994,7 @@ fn open_file(s: &mut Session, p: &Value) -> R {
         s.reset(i.model, None);
         return Ok(reply);
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| bad(c, format!("{}: {e}", path.display())))?;
+    let text = String::from_utf8(bytes).map_err(|e| bad(c, format!("{} is not a BIMCraft project: {e}", path.display())))?;
     let (mut m, left_out) = Model::read(&text).map_err(|e| bad(c, format!("{} is not a BIMCraft project: {e}", path.display())))?;
     m.adopt_materials();
     // A project parameter named as a phase or a design option is held under is from before they were: it keeps its values, renamed.
@@ -3262,6 +3277,62 @@ fn save(s: &mut Session, p: &Value) -> R {
     Ok(json!({"path": path, "format": "bimcraft"}))
 }
 
+/// Encode the project or a view as bytes, without writing a file. Used by the browser to
+/// download, and by tests. `format` is the extension (`bimcraft`, `ifc`, `glb`, `pdf`, `svg`, `png`).
+/// For `png` and `svg`, `p` is the same object `render` takes (view, size, camera).
+pub(crate) fn encode_bytes(s: &mut Session, format: &str, p: &Value) -> Result<(Vec<u8>, Value), String> {
+    let c = "save";
+    let format = format.trim_start_matches('.').to_ascii_lowercase();
+    match format.as_str() {
+        "ifc" => Ok((crate::ifc::export(&s.model).into_bytes(), json!({"format": "IFC4"}))),
+        "glb" => {
+            let out = crate::gltf::export(&crate::link::seen(&s.model)).map_err(|e| bad(c, e))?;
+            Ok((out.bytes, json!({"format": "glTF 2.0", "elements": out.nodes, "triangles": out.triangles})))
+        }
+        "pdf" => {
+            let seen = crate::link::seen(&s.model);
+            let m = &*seen;
+            let mut sheets: Vec<(&str, Drawing, P2)> = m
+                .elements
+                .iter()
+                .filter_map(|(id, e)| match e {
+                    Element::Sheet(sh) => Some((sh.number.as_str(), sheet::draw(m, *id)?, paper(&sh.size)?)),
+                    _ => None,
+                })
+                .collect();
+            if sheets.is_empty() {
+                return Err(bad(c, "there are no sheets to print; make one with `sheet` and `place` views on it"));
+            }
+            sheets.sort_by(|a, b| a.0.cmp(b.0));
+            let pages: Vec<(&Drawing, P2)> = sheets.iter().map(|(_, d, p)| (d, *p)).collect();
+            Ok((pdf::pdf(&pages), json!({"format": "PDF", "pages": pages.len()})))
+        }
+        "bimcraft" | "json" | "" => {
+            let text = s.model.to_json().map_err(|e| bad(c, e))?;
+            Ok((text.into_bytes(), json!({"format": "bimcraft"})))
+        }
+        "png" | "svg" => {
+            let mut q = p.clone();
+            if let Some(o) = q.as_object_mut() {
+                o.remove("path");
+                o.insert("format".into(), json!(format));
+            }
+            let reply = render_view(s, &q)?;
+            if format == "svg" {
+                if let Some(svg) = reply.get("svg").and_then(Value::as_str) {
+                    return Ok((svg.as_bytes().to_vec(), reply));
+                }
+                return Err(bad(c, "only plans make SVGs; save this view as .png"));
+            }
+            if let Some(b64) = reply.get("pngBase64").and_then(Value::as_str) {
+                return Ok((decode_base64(b64)?, reply));
+            }
+            Err(bad(c, "the view could not be encoded as a PNG"))
+        }
+        other => Err(bad(c, format!("cannot encode as .{other}; use bimcraft, ifc, glb, pdf, svg or png"))),
+    }
+}
+
 fn autosave(s: &mut Session, p: &Value) -> R {
     let path = PathBuf::from(string("autosave", p, "path")?.ok_or_else(|| bad("autosave", "`path` is required"))?);
     if s.path.as_ref() == Some(&path) {
@@ -3295,6 +3366,43 @@ pub fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Inverse of [`base64`], for bytes a command returned as `pngBase64`.
+pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut table = [0xffu8; 256];
+    for (i, b) in ALPHABET.iter().enumerate() {
+        table[*b as usize] = i as u8;
+    }
+    let clean: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return Err("pngBase64 is not valid base64".into());
+    }
+    let mut out = Vec::with_capacity(clean.len() / 4 * 3);
+    for chunk in clean.chunks(4) {
+        let mut n = 0u32;
+        let mut pads = 0;
+        for (i, b) in chunk.iter().enumerate() {
+            if *b == b'=' {
+                pads += 1;
+                continue;
+            }
+            let v = table[*b as usize];
+            if v == 0xff {
+                return Err("pngBase64 is not valid base64".into());
+            }
+            n |= u32::from(v) << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if pads < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pads < 1 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
 }
 
 fn write_plan(d: &render::Drawing, path: &Path) -> Result<(), String> {
@@ -3538,10 +3646,20 @@ fn render_view(s: &mut Session, p: &Value) -> R {
             write_plan(&d, &path)?;
             Ok(with_notes(json!({"path": path, "width": w, "height": h, "view": level_name(m, level), "kind": kind}), &d.notes))
         }
-        None => Ok(with_notes(
-            json!({"pngBase64": base64(&render::png(&d)?), "width": w, "height": h, "view": level_name(m, level), "kind": kind}),
-            &d.notes,
-        )),
+        None => {
+            let fmt = string(c, p, "format")?.unwrap_or_else(|| "png".into());
+            if fmt.eq_ignore_ascii_case("svg") {
+                Ok(with_notes(
+                    json!({"svg": render::svg(&d), "width": w, "height": h, "view": level_name(m, level), "kind": kind}),
+                    &d.notes,
+                ))
+            } else {
+                Ok(with_notes(
+                    json!({"pngBase64": base64(&render::png(&d)?), "width": w, "height": h, "view": level_name(m, level), "kind": kind}),
+                    &d.notes,
+                ))
+            }
+        }
     }
 }
 
@@ -6608,11 +6726,29 @@ fn read_dxf_file(s: &Session, path: &str) -> Result<(Vec<u8>, Vec<String>), Stri
         }
         other => return Err(format!("{}: a .{other} file isn't a CAD drawing BIMCraft reads; it reads DXF", full.display())),
     }
-    let len = std::fs::metadata(&full).map_err(|e| format!("{}: {e}", full.display()))?.len();
-    if len > crate::dxf::MAX_BYTES as u64 {
-        return Err(format!("{} is too large ({len} bytes; up to {})", full.display(), crate::dxf::MAX_BYTES));
+    let bytes = crate::bytes_io::take(&full).or_else(|| crate::bytes_io::take(Path::new(path)));
+    if let Some(bytes) = bytes {
+        let len = bytes.len();
+        if len > crate::dxf::MAX_BYTES {
+            return Err(format!("{} is too large ({len} bytes; up to {})", full.display(), crate::dxf::MAX_BYTES));
+        }
+        return Ok((bytes, Vec::new()));
     }
-    std::fs::read(&full).map(|bytes| (bytes, Vec::new())).map_err(|e| format!("{}: {e}", full.display()))
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Err(format!(
+            "{}: in the browser, import a DXF from Insert > Import CAD or by dropping it on the window (DWG isn't available here; save it as DXF first)",
+            full.display()
+        ));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let len = std::fs::metadata(&full).map_err(|e| format!("{}: {e}", full.display()))?.len();
+        if len > crate::dxf::MAX_BYTES as u64 {
+            return Err(format!("{} is too large ({len} bytes; up to {})", full.display(), crate::dxf::MAX_BYTES));
+        }
+        std::fs::read(&full).map(|bytes| (bytes, Vec::new())).map_err(|e| format!("{}: {e}", full.display()))
+    }
 }
 
 /// The CAD import `id` names, by id or GUID.

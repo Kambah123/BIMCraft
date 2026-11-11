@@ -748,6 +748,18 @@ impl Session {
         }
         Ok(json!({ key: label, "count": count }))
     }
+
+    /// Park `bytes` so the next `open` or `import_cad` that names `path` reads them instead of the disk.
+    /// The browser uses this after the File API or a drop gives it the file; a test may too.
+    pub fn provide_bytes(&self, path: impl AsRef<std::path::Path>, bytes: Vec<u8>) {
+        crate::bytes_io::provide(path.as_ref(), bytes);
+    }
+
+    /// Encode the project or a view as `format` (bimcraft, ifc, glb, pdf, svg, png) without writing a file.
+    /// `render` is the same parameter object `render` / File > Export uses for a PNG or SVG (view, size, camera).
+    pub fn encode(&mut self, format: &str, render: &serde_json::Value) -> Result<(Vec<u8>, serde_json::Value), String> {
+        crate::commands::encode_bytes(self, format, render)
+    }
 }
 
 /// What a session that may only read keeps through a command: its project, its history, its file, the phase and option it makes

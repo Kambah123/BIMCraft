@@ -125,6 +125,7 @@ impl BimApp {
     }
 
     /// File > Open Recent: the files opened or saved last, newest first, and a way to forget them.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn recent_menu(&mut self, ui: &mut Ui, ctx: &Context) {
         if self.recent.paths().is_empty() {
             ui.add_enabled(false, Button::new(t("Open Recent")));
