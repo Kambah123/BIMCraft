@@ -78,6 +78,38 @@
         color: #6f7c74;
         font-size: 12px;
       }
+      #campusbim-loading .problem {
+        display: none;
+        max-width: 440px;
+        margin: 6px 20px 0;
+        text-align: center;
+        font-size: 14px;
+        line-height: 1.45;
+        color: #e6eee9;
+      }
+      #campusbim-loading .problem small {
+        display: block;
+        margin-top: 6px;
+        color: #9aada2;
+        font-size: 12px;
+        word-break: break-word;
+      }
+      #campusbim-loading .problem button {
+        margin: 12px 6px 0;
+        padding: 8px 16px;
+        border: 1px solid #25362d;
+        border-radius: 6px;
+        background: #1e2b24;
+        color: #e6eee9;
+        font: inherit;
+        cursor: pointer;
+      }
+      #campusbim-loading .problem button.primary {
+        background: #d8f36c;
+        border-color: #d8f36c;
+        color: #0a0f0c;
+        font-weight: 600;
+      }
       canvas {
         display: block;
         width: 100%;
@@ -109,9 +141,71 @@
       <div class="name">Campus<b>BIM</b></div>
       <div class="what">Free BIM for Nigerian architecture students.</div>
       <div class="bar"></div>
+      <div class="problem" id="campusbim-problem" role="alert"></div>
       <div class="credit">Built on BIMCraft (open source)</div>
     </div>
     <!-- Hidden picker so a test (and any page script) can setInputFiles and open a project. -->
     <input id="bimcraft-file-input" type="file" accept=".bimcraft,.ifc,.dxf,.ifcZIP" hidden />
+    <script>
+      // The loading screen never waits silently: an error before the app is up, or a start that takes too long, says so here
+      // with a way to try again. web.rs calls campusbimFail when the graphics can't start.
+      (function () {
+        var started = Date.now();
+        function box() {
+          return document.getElementById("campusbim-problem");
+        }
+        function show(title, detail, final) {
+          var b = box();
+          if (!b || window.__bimcraftReady) return;
+          var safe = location.search.indexOf("gfx=gl") >= 0;
+          b.innerHTML = "";
+          var t = document.createElement("div");
+          t.textContent = title;
+          b.appendChild(t);
+          if (detail) {
+            var d = document.createElement("small");
+            d.textContent = detail;
+            b.appendChild(d);
+          }
+          var retry = document.createElement("button");
+          retry.className = "primary";
+          retry.textContent = "Try again";
+          retry.onclick = function () { location.reload(); };
+          b.appendChild(retry);
+          if (final && !safe) {
+            var gl = document.createElement("button");
+            gl.textContent = "Compatibility mode";
+            gl.onclick = function () {
+              var q = location.search ? location.search + "&gfx=gl" : "?gfx=gl";
+              location.href = location.pathname + q;
+            };
+            b.appendChild(gl);
+          }
+          b.style.display = "block";
+          if (final) {
+            var bar = document.querySelector("#campusbim-loading .bar");
+            if (bar) bar.style.display = "none";
+          }
+        }
+        window.campusbimFail = function (detail) {
+          console.error("CampusBIM could not start: " + detail);
+          show(
+            "CampusBIM couldn't start the graphics in this browser.",
+            detail + " — Restarting the browser often helps (Chrome turns graphics off for a site after a GPU crash). Details for support: chrome://gpu",
+            true
+          );
+        };
+        window.addEventListener("error", function (e) {
+          if (!window.__bimcraftReady) show("CampusBIM hit an error while starting.", String((e && e.message) || e), true);
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          if (!window.__bimcraftReady) show("CampusBIM hit an error while starting.", String((e && e.reason) || e), true);
+        });
+        setTimeout(function () {
+          if (!window.__bimcraftReady)
+            show("Still loading… this is taking longer than usual (" + Math.round((Date.now() - started) / 1000) + " s).", "A slow connection can take a few minutes the first time; after that it is cached.", false);
+        }, 60000);
+      })();
+    </script>
   </body>
 </html>

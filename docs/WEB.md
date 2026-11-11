@@ -178,3 +178,12 @@ choice is kept in the browser (`localStorage` key `campusbim.look`); the desktop
 app keeps its own settings file and default look. The top bar stays dark in both
 CampusBIM themes and shows the save state: *Saved to cloud*, *Unsaved changes*
 or *Local only*. Window buttons are hidden on the web.
+
+## Start-up
+
+The loading screen never waits silently. The app's device never asks the browser's card for more than it has (egui asks
+for 8192 px textures; many phones' WebGL2 give 4096, and the start used to fail with the loading screen left up). A start
+that fails on WebGPU is tried again on WebGL2 alone (`?gfx=gl` asks for that from the start); one that still fails, a
+panic or a script error before the first frame, says so on the loading screen with **Try again** and **Compatibility
+mode**, and logs `CampusBIM could not start: …` to the console. After 60 s without a first frame it says it is still
+loading. Chrome turns WebGL off for a site after a GPU crash until the browser restarts; `chrome://gpu` shows it.
